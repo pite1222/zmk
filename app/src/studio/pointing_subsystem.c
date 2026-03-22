@@ -81,28 +81,52 @@ static void apply_sensitivity(void) {
 }
 
 zmk_studio_Response get_sensitivity(const zmk_studio_Request *req) {
-    LOG_DBG("");
+    LOG_DBG("get_sensitivity called");
 
     zmk_pointing_GetSensitivityResponse resp =
         zmk_pointing_GetSensitivityResponse_init_zero;
 
     resp.cursor.numerator = pointing_settings.cursor_numerator;
     resp.cursor.denominator = pointing_settings.cursor_denominator;
+
+    /* Always return scroll with valid defaults so the client knows scroll is supported */
     resp.scroll.numerator = pointing_settings.scroll_numerator;
     resp.scroll.denominator = pointing_settings.scroll_denominator;
+
+    /* Ensure we never return 0/0 - use 1/1 as default */
+    if (resp.cursor.denominator == 0) {
+        resp.cursor.numerator = 1;
+        resp.cursor.denominator = 1;
+    }
+    if (resp.scroll.denominator == 0) {
+        resp.scroll.numerator = 1;
+        resp.scroll.denominator = 1;
+    }
+
     resp.cpi = pointing_settings.cpi;
+
+    LOG_INF("get_sensitivity: cursor=%u/%u scroll=%u/%u cpi=%u",
+            resp.cursor.numerator, resp.cursor.denominator,
+            resp.scroll.numerator, resp.scroll.denominator,
+            resp.cpi);
 
     return POINTING_RESPONSE(get_sensitivity, resp);
 }
 
 zmk_studio_Response set_sensitivity(const zmk_studio_Request *req) {
-    LOG_DBG("");
+    LOG_DBG("set_sensitivity called");
 
     const zmk_pointing_SetSensitivityRequest *set_req =
         &req->subsystem.pointing.request_type.set_sensitivity;
 
-    /* Validate: denominators must not be zero */
-    if (set_req->cursor.denominator == 0 || set_req->scroll.denominator == 0) {
+    LOG_INF("set_sensitivity: cursor=%u/%u scroll=%u/%u cpi=%u",
+            set_req->cursor.numerator, set_req->cursor.denominator,
+            set_req->scroll.numerator, set_req->scroll.denominator,
+            set_req->cpi);
+
+    /* Validate cursor: denominator must not be zero */
+    if (set_req->cursor.denominator == 0) {
+        LOG_WRN("set_sensitivity: cursor denominator is 0, rejecting");
         zmk_pointing_SetSensitivityResponse resp =
             zmk_pointing_SetSensitivityResponse_init_zero;
         resp.which_result = zmk_pointing_SetSensitivityResponse_err_tag;
@@ -110,12 +134,25 @@ zmk_studio_Response set_sensitivity(const zmk_studio_Request *req) {
         return POINTING_RESPONSE(set_sensitivity, resp);
     }
 
-    /* Update in-memory settings */
+    /* Update cursor settings */
     pointing_settings.cursor_numerator = set_req->cursor.numerator;
     pointing_settings.cursor_denominator = set_req->cursor.denominator;
-    pointing_settings.scroll_numerator = set_req->scroll.numerator;
-    pointing_settings.scroll_denominator = set_req->scroll.denominator;
-    pointing_settings.cpi = set_req->cpi;
+
+    /* Update scroll settings - if not provided (both 0), keep existing or use 1/1 default */
+    if (set_req->scroll.denominator > 0) {
+        pointing_settings.scroll_numerator = set_req->scroll.numerator;
+        pointing_settings.scroll_denominator = set_req->scroll.denominator;
+    } else if (pointing_settings.scroll_denominator == 0) {
+        /* Ensure we always have a valid scroll setting */
+        pointing_settings.scroll_numerator = 1;
+        pointing_settings.scroll_denominator = 1;
+    }
+    /* else: keep existing scroll settings when not provided */
+
+    /* Update CPI if provided (0 means "don't change") */
+    if (set_req->cpi > 0) {
+        pointing_settings.cpi = set_req->cpi;
+    }
 
     /* Persist to flash */
     int ret = pointing_settings_save();
@@ -135,6 +172,8 @@ zmk_studio_Response set_sensitivity(const zmk_studio_Request *req) {
         zmk_pointing_SetSensitivityResponse_init_zero;
     resp.which_result = zmk_pointing_SetSensitivityResponse_ok_tag;
     resp.result.ok = true;
+
+    LOG_INF("set_sensitivity: success");
     return POINTING_RESPONSE(set_sensitivity, resp);
 }
 
