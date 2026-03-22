@@ -9,6 +9,9 @@
 LOG_MODULE_DECLARE(zmk_studio, CONFIG_ZMK_STUDIO_LOG_LEVEL);
 
 #include <zephyr/settings/settings.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/sensor.h>
 
 #include <zmk/studio/rpc.h>
 
@@ -19,9 +22,35 @@ ZMK_RPC_SUBSYSTEM(pointing)
 #define POINTING_RESPONSE(type, ...) ZMK_RPC_RESPONSE(pointing, type, __VA_ARGS__)
 
 /*
+ * PMW3610 CPI attribute - matches the enum in pmw3610.h
+ * We define it here to avoid a direct dependency on the PMW3610 driver header.
+ */
+#define PMW3610_ALT_ATTR_CPI 0
+
+/* CPI constraints for PMW3610 */
+#define PMW3610_MIN_CPI 200
+#define PMW3610_MAX_CPI 3200
+#define PMW3610_CPI_STEP 200
+
+/* Default CPI from devicetree (monokey_R.overlay: cpi = <800>) */
+#define DEFAULT_CPI 800
+
+/*
+ * Try to get the trackball device from devicetree.
+ * The conductor board defines it as &trackball in the overlay.
+ */
+#if DT_HAS_COMPAT_STATUS_OKAY(pixart_pmw3610_alt)
+#define HAS_TRACKBALL 1
+static const struct device *trackball_dev = DEVICE_DT_GET(DT_INST(0, pixart_pmw3610_alt));
+#else
+#define HAS_TRACKBALL 0
+static const struct device *trackball_dev = NULL;
+#endif
+
+/*
  * Persistent sensitivity settings.
- * numerator/denominator form a rational multiplier applied to the input_processor_scaler.
- * Default is 1/1 (no scaling change).
+ * numerator/denominator form a rational multiplier.
+ * Default is 1/1 (no scaling change), CPI = 0 means "use default".
  */
 static struct {
     uint32_t cursor_numerator;
@@ -50,7 +79,16 @@ static int pointing_settings_set(const char *name, size_t len,
         if (len != sizeof(pointing_settings)) {
             return -EINVAL;
         }
-        return read_cb(cb_arg, &pointing_settings, sizeof(pointing_settings));
+        int rc = read_cb(cb_arg, &pointing_settings, sizeof(pointing_settings));
+        if (rc >= 0) {
+            LOG_INF("Loaded pointing settings: cursor=%u/%u scroll=%u/%u cpi=%u",
+                    pointing_settings.cursor_numerator,
+                    pointing_settings.cursor_denominator,
+                    pointing_settings.scroll_numerator,
+                    pointing_settings.scroll_denominator,
+                    pointing_settings.cpi);
+        }
+        return rc;
     }
     return -ENOENT;
 }
@@ -61,24 +99,96 @@ static int pointing_settings_save(void) {
 }
 
 /*
+ * Compute the effective CPI based on cursor sensitivity ratio.
+ *
+ * If an explicit CPI is set (pointing_settings.cpi > 0), use that directly.
+ * Otherwise, compute: effective_cpi = DEFAULT_CPI * numerator / denominator
+ * Then clamp to [PMW3610_MIN_CPI, PMW3610_MAX_CPI] and round to nearest step.
+ */
+static uint32_t compute_effective_cpi(void) {
+    uint32_t cpi;
+
+    if (pointing_settings.cpi > 0) {
+        cpi = pointing_settings.cpi;
+    } else {
+        /* Compute from cursor ratio */
+        uint32_t num = pointing_settings.cursor_numerator;
+        uint32_t den = pointing_settings.cursor_denominator;
+        if (den == 0) {
+            den = 1;
+        }
+        cpi = (DEFAULT_CPI * num + den / 2) / den; /* rounded division */
+    }
+
+    /* Clamp to valid range */
+    if (cpi < PMW3610_MIN_CPI) {
+        cpi = PMW3610_MIN_CPI;
+    }
+    if (cpi > PMW3610_MAX_CPI) {
+        cpi = PMW3610_MAX_CPI;
+    }
+
+    /* Round to nearest step of 200 */
+    cpi = ((cpi + PMW3610_CPI_STEP / 2) / PMW3610_CPI_STEP) * PMW3610_CPI_STEP;
+
+    return cpi;
+}
+
+/*
  * Apply the current sensitivity settings to the running system.
- * This function should update the input processor scaler parameters
- * at runtime. The exact mechanism depends on the board's devicetree
- * configuration and input processor driver API.
- *
- * For now, the settings are persisted and will take effect on next boot
- * via the input_processor_scaler devicetree configuration.
- *
- * TODO: Implement runtime scaler update via input_processor API if available.
+ * Uses the PMW3610 sensor_attr_set API to change CPI at runtime.
  */
 static void apply_sensitivity(void) {
-    LOG_INF("Pointing sensitivity updated: cursor=%u/%u scroll=%u/%u cpi=%u",
+    uint32_t effective_cpi = compute_effective_cpi();
+
+    LOG_INF("Applying sensitivity: cursor=%u/%u scroll=%u/%u effective_cpi=%u",
             pointing_settings.cursor_numerator,
             pointing_settings.cursor_denominator,
             pointing_settings.scroll_numerator,
             pointing_settings.scroll_denominator,
-            pointing_settings.cpi);
+            effective_cpi);
+
+#if HAS_TRACKBALL
+    if (trackball_dev == NULL || !device_is_ready(trackball_dev)) {
+        LOG_WRN("Trackball device not ready, cannot apply CPI");
+        return;
+    }
+
+    struct sensor_value val = {
+        .val1 = (int32_t)effective_cpi,
+        .val2 = 0,
+    };
+
+    int err = sensor_attr_set(trackball_dev, SENSOR_CHAN_ALL,
+                               (enum sensor_attribute)PMW3610_ALT_ATTR_CPI, &val);
+    if (err) {
+        LOG_ERR("Failed to set CPI to %u: %d", effective_cpi, err);
+    } else {
+        LOG_INF("CPI set to %u successfully", effective_cpi);
+    }
+#else
+    LOG_WRN("No trackball device available, CPI change not applied");
+#endif
 }
+
+/*
+ * Apply settings on boot after settings are loaded.
+ * This ensures saved sensitivity is restored after power cycle.
+ */
+static int pointing_studio_init(void) {
+    /* Settings are loaded by this point, apply them */
+    if (pointing_settings.cursor_denominator > 0 &&
+        (pointing_settings.cursor_numerator != 1 ||
+         pointing_settings.cursor_denominator != 1 ||
+         pointing_settings.cpi > 0)) {
+        LOG_INF("Restoring saved pointing sensitivity on boot");
+        apply_sensitivity();
+    }
+    return 0;
+}
+
+/* Run after settings subsystem is initialized (priority 91 > settings at 90) */
+SYS_INIT(pointing_studio_init, APPLICATION, 91);
 
 zmk_studio_Response get_sensitivity(const zmk_studio_Request *req) {
     LOG_DBG("get_sensitivity called");
@@ -103,7 +213,7 @@ zmk_studio_Response get_sensitivity(const zmk_studio_Request *req) {
         resp.scroll.denominator = 1;
     }
 
-    resp.cpi = pointing_settings.cpi;
+    resp.cpi = compute_effective_cpi();
 
     LOG_INF("get_sensitivity: cursor=%u/%u scroll=%u/%u cpi=%u",
             resp.cursor.numerator, resp.cursor.denominator,
@@ -149,15 +259,22 @@ zmk_studio_Response set_sensitivity(const zmk_studio_Request *req) {
     }
     /* else: keep existing scroll settings when not provided */
 
-    /* Update CPI if provided (0 means "don't change") */
+    /* Update CPI if provided (0 means "don't change, compute from ratio") */
     if (set_req->cpi > 0) {
         pointing_settings.cpi = set_req->cpi;
+    } else {
+        /* Clear explicit CPI so it's computed from cursor ratio */
+        pointing_settings.cpi = 0;
     }
 
-    /* Persist to flash */
+    /* Apply to running system FIRST (immediate feedback) */
+    apply_sensitivity();
+
+    /* Then persist to flash */
     int ret = pointing_settings_save();
     if (ret < 0) {
         LOG_WRN("Failed to save pointing sensitivity settings: %d", ret);
+        /* Note: CPI was already applied, just storage failed */
         zmk_pointing_SetSensitivityResponse resp =
             zmk_pointing_SetSensitivityResponse_init_zero;
         resp.which_result = zmk_pointing_SetSensitivityResponse_err_tag;
@@ -165,15 +282,12 @@ zmk_studio_Response set_sensitivity(const zmk_studio_Request *req) {
         return POINTING_RESPONSE(set_sensitivity, resp);
     }
 
-    /* Apply to running system */
-    apply_sensitivity();
-
     zmk_pointing_SetSensitivityResponse resp =
         zmk_pointing_SetSensitivityResponse_init_zero;
     resp.which_result = zmk_pointing_SetSensitivityResponse_ok_tag;
     resp.result.ok = true;
 
-    LOG_INF("set_sensitivity: success");
+    LOG_INF("set_sensitivity: success, effective CPI=%u", compute_effective_cpi());
     return POINTING_RESPONSE(set_sensitivity, resp);
 }
 
@@ -183,6 +297,10 @@ static int pointing_settings_reset(void) {
     pointing_settings.scroll_numerator = 1;
     pointing_settings.scroll_denominator = 1;
     pointing_settings.cpi = 0;
+
+    /* Apply default CPI */
+    apply_sensitivity();
+
     return pointing_settings_save();
 }
 
