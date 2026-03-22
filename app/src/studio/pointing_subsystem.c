@@ -17,6 +17,10 @@ LOG_MODULE_DECLARE(zmk_studio, CONFIG_ZMK_STUDIO_LOG_LEVEL);
 
 #include <pb_encode.h>
 
+/* External AML control functions from input_processor_temp_layer.c */
+extern bool zmk_temp_layer_get_aml_enabled(void);
+extern void zmk_temp_layer_set_aml_enabled(bool enabled);
+
 ZMK_RPC_SUBSYSTEM(pointing)
 
 #define POINTING_RESPONSE(type, ...) ZMK_RPC_RESPONSE(pointing, type, __VA_ARGS__)
@@ -68,6 +72,7 @@ static struct {
     uint32_t scroll_denominator;
     uint32_t cpi;
     uint32_t scroll_inverted;
+    uint32_t aml_enabled;
 } pointing_settings = {
     .cursor_numerator = 1,
     .cursor_denominator = 1,
@@ -75,6 +80,7 @@ static struct {
     .scroll_denominator = 1,
     .cpi = 0,
     .scroll_inverted = 0,
+    .aml_enabled = 1,
 };
 
 /* Forward declaration for the settings handler */
@@ -88,11 +94,22 @@ static int pointing_settings_set(const char *name, size_t len,
                                   settings_read_cb read_cb, void *cb_arg) {
     if (strcmp(name, "sensitivity") == 0) {
         if (len != sizeof(pointing_settings)) {
-            /* Handle migration from old format (without scroll_inverted) */
+            /* Handle migration from old formats */
             if (len == sizeof(pointing_settings) - sizeof(uint32_t)) {
+                /* Migration: missing aml_enabled field */
+                int rc = read_cb(cb_arg, &pointing_settings, len);
+                if (rc >= 0) {
+                    pointing_settings.aml_enabled = 1;
+                    LOG_INF("Migrated pointing settings (added aml_enabled)");
+                }
+                return rc;
+            }
+            if (len == sizeof(pointing_settings) - 2 * sizeof(uint32_t)) {
+                /* Migration: missing both scroll_inverted and aml_enabled */
                 int rc = read_cb(cb_arg, &pointing_settings, len);
                 if (rc >= 0) {
                     pointing_settings.scroll_inverted = 0;
+                    pointing_settings.aml_enabled = 1;
                     LOG_INF("Migrated pointing settings (old format)");
                 }
                 return rc;
@@ -213,6 +230,10 @@ static int pointing_studio_init(void) {
     studio_scroll_numerator = (int32_t)pointing_settings.scroll_numerator;
     studio_scroll_denominator = (int32_t)pointing_settings.scroll_denominator;
     studio_scroll_inverted = (pointing_settings.scroll_inverted != 0);
+
+    /* Restore AML enabled state */
+    zmk_temp_layer_set_aml_enabled(pointing_settings.aml_enabled != 0);
+    LOG_INF("Restored AML enabled state: %u", pointing_settings.aml_enabled);
 
     /* Apply CPI if non-default */
     if (pointing_settings.cursor_denominator > 0 &&
@@ -355,17 +376,66 @@ static int pointing_settings_reset(void) {
     pointing_settings.scroll_denominator = 1;
     pointing_settings.cpi = 0;
     pointing_settings.scroll_inverted = 0;
+    pointing_settings.aml_enabled = 1;
 
     /* Apply defaults */
     apply_sensitivity();
+    zmk_temp_layer_set_aml_enabled(true);
 
     return pointing_settings_save();
 }
 
 ZMK_RPC_SUBSYSTEM_SETTINGS_RESET(pointing, pointing_settings_reset);
 
+zmk_studio_Response get_auto_layer(const zmk_studio_Request *req) {
+    LOG_DBG("get_auto_layer called");
+
+    zmk_pointing_GetAutoLayerResponse resp =
+        zmk_pointing_GetAutoLayerResponse_init_zero;
+
+    resp.enabled = zmk_temp_layer_get_aml_enabled();
+
+    LOG_INF("get_auto_layer: enabled=%d", resp.enabled);
+
+    return POINTING_RESPONSE(get_auto_layer, resp);
+}
+
+zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
+    LOG_DBG("set_auto_layer called");
+
+    const zmk_pointing_SetAutoLayerRequest *set_req =
+        &req->subsystem.pointing.request_type.set_auto_layer;
+
+    LOG_INF("set_auto_layer: enabled=%d", set_req->enabled);
+
+    /* Apply immediately */
+    zmk_temp_layer_set_aml_enabled(set_req->enabled);
+
+    /* Persist to flash */
+    pointing_settings.aml_enabled = set_req->enabled ? 1 : 0;
+    int ret = pointing_settings_save();
+    if (ret < 0) {
+        LOG_WRN("Failed to save AML setting: %d", ret);
+        zmk_pointing_SetAutoLayerResponse resp =
+            zmk_pointing_SetAutoLayerResponse_init_zero;
+        resp.which_result = zmk_pointing_SetAutoLayerResponse_err_tag;
+        resp.result.err = zmk_pointing_SetAutoLayerErrorCode_SET_AUTO_LAYER_ERR_STORAGE;
+        return POINTING_RESPONSE(set_auto_layer, resp);
+    }
+
+    zmk_pointing_SetAutoLayerResponse resp =
+        zmk_pointing_SetAutoLayerResponse_init_zero;
+    resp.which_result = zmk_pointing_SetAutoLayerResponse_ok_tag;
+    resp.result.ok = true;
+
+    LOG_INF("set_auto_layer: success, enabled=%d", set_req->enabled);
+    return POINTING_RESPONSE(set_auto_layer, resp);
+}
+
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECURED);
+ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_auto_layer, ZMK_STUDIO_RPC_HANDLER_SECURED);
+ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_auto_layer, ZMK_STUDIO_RPC_HANDLER_SECURED);
 
 static int event_mapper(const zmk_event_t *eh, zmk_studio_Notification *n) { return 0; }
 

@@ -39,6 +39,43 @@ struct temp_layer_data {
     struct temp_layer_state state;
 };
 
+/*
+ * Global AML enabled flag.
+ * When false, the temp_layer input processor will not activate the layer.
+ * This is toggled via the pointing subsystem RPC (Studio).
+ */
+volatile bool zmk_temp_layer_aml_enabled = true;
+
+bool zmk_temp_layer_get_aml_enabled(void) {
+    return zmk_temp_layer_aml_enabled;
+}
+
+void zmk_temp_layer_set_aml_enabled(bool enabled) {
+    zmk_temp_layer_aml_enabled = enabled;
+
+    /* If disabling AML and a layer is currently active, deactivate it */
+    if (!enabled) {
+        const struct device *dev = DEVICE_DT_INST_GET(0);
+        struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
+
+        int ret = k_mutex_lock(&data->lock, K_FOREVER);
+        if (ret < 0) {
+            return;
+        }
+
+        if (data->state.is_active) {
+            data->state.is_active = false;
+            zmk_keymap_layer_deactivate(data->state.toggle_layer, false);
+            k_work_cancel_delayable(&layer_disable_works[data->state.toggle_layer]);
+            LOG_INF("AML disabled: deactivated layer %d", data->state.toggle_layer);
+        }
+
+        k_mutex_unlock(&data->lock);
+    }
+
+    LOG_INF("AML %s", enabled ? "enabled" : "disabled");
+}
+
 /* Static Work Queue Items */
 static struct k_work_delayable layer_disable_works[MAX_LAYERS];
 
@@ -234,6 +271,11 @@ static int temp_layer_handle_event(const struct device *dev, struct input_event 
     if (param1 >= MAX_LAYERS) {
         LOG_ERR("Invalid layer index: %d", param1);
         return -EINVAL;
+    }
+
+    /* Check if AML is enabled globally */
+    if (!zmk_temp_layer_aml_enabled) {
+        return ZMK_INPUT_PROC_CONTINUE;
     }
 
     struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
