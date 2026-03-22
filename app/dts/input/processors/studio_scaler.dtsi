@@ -1,0 +1,16 @@
+/*
+ * Copyright (c) 2025 The Conductor Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+    /omit-if-no-ref/ studio_scroll_scaler: studio_scroll_scaler {
+        compatible = "zmk,input-processor-studio-scaler";
+        #input-processor-cells = <0>;
+        type = <INPUT_EV_REL>;
+        codes = <INPUT_REL_WHEEL INPUT_REL_HWHEEL>;
+    };
+};

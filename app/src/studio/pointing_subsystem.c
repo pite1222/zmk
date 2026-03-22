@@ -48,9 +48,18 @@ static const struct device *trackball_dev = NULL;
 #endif
 
 /*
+ * Global variables for the studio_scaler input processor.
+ * These are read by input_processor_studio_scaler.c at runtime.
+ */
+volatile int32_t studio_scroll_numerator = 1;
+volatile int32_t studio_scroll_denominator = 1;
+volatile bool studio_scroll_inverted = false;
+
+/*
  * Persistent sensitivity settings.
  * numerator/denominator form a rational multiplier.
  * Default is 1/1 (no scaling change), CPI = 0 means "use default".
+ * scroll_inverted: 0 = normal, 1 = inverted (natural scrolling)
  */
 static struct {
     uint32_t cursor_numerator;
@@ -58,12 +67,14 @@ static struct {
     uint32_t scroll_numerator;
     uint32_t scroll_denominator;
     uint32_t cpi;
+    uint32_t scroll_inverted;
 } pointing_settings = {
     .cursor_numerator = 1,
     .cursor_denominator = 1,
     .scroll_numerator = 1,
     .scroll_denominator = 1,
     .cpi = 0,
+    .scroll_inverted = 0,
 };
 
 /* Forward declaration for the settings handler */
@@ -77,16 +88,26 @@ static int pointing_settings_set(const char *name, size_t len,
                                   settings_read_cb read_cb, void *cb_arg) {
     if (strcmp(name, "sensitivity") == 0) {
         if (len != sizeof(pointing_settings)) {
+            /* Handle migration from old format (without scroll_inverted) */
+            if (len == sizeof(pointing_settings) - sizeof(uint32_t)) {
+                int rc = read_cb(cb_arg, &pointing_settings, len);
+                if (rc >= 0) {
+                    pointing_settings.scroll_inverted = 0;
+                    LOG_INF("Migrated pointing settings (old format)");
+                }
+                return rc;
+            }
             return -EINVAL;
         }
         int rc = read_cb(cb_arg, &pointing_settings, sizeof(pointing_settings));
         if (rc >= 0) {
-            LOG_INF("Loaded pointing settings: cursor=%u/%u scroll=%u/%u cpi=%u",
+            LOG_INF("Loaded pointing settings: cursor=%u/%u scroll=%u/%u cpi=%u inv=%u",
                     pointing_settings.cursor_numerator,
                     pointing_settings.cursor_denominator,
                     pointing_settings.scroll_numerator,
                     pointing_settings.scroll_denominator,
-                    pointing_settings.cpi);
+                    pointing_settings.cpi,
+                    pointing_settings.scroll_inverted);
         }
         return rc;
     }
@@ -136,17 +157,29 @@ static uint32_t compute_effective_cpi(void) {
 
 /*
  * Apply the current sensitivity settings to the running system.
- * Uses the PMW3610 sensor_attr_set API to change CPI at runtime.
+ * - CPI: Uses the PMW3610 sensor_attr_set API to change CPI at runtime.
+ * - Scroll: Updates the global variables read by studio_scroll_scaler.
  */
 static void apply_sensitivity(void) {
     uint32_t effective_cpi = compute_effective_cpi();
 
-    LOG_INF("Applying sensitivity: cursor=%u/%u scroll=%u/%u effective_cpi=%u",
+    LOG_INF("Applying sensitivity: cursor=%u/%u scroll=%u/%u cpi=%u inv=%u",
             pointing_settings.cursor_numerator,
             pointing_settings.cursor_denominator,
             pointing_settings.scroll_numerator,
             pointing_settings.scroll_denominator,
-            effective_cpi);
+            effective_cpi,
+            pointing_settings.scroll_inverted);
+
+    /* Update scroll globals for the studio_scaler input processor */
+    studio_scroll_numerator = (int32_t)pointing_settings.scroll_numerator;
+    studio_scroll_denominator = (int32_t)pointing_settings.scroll_denominator;
+    studio_scroll_inverted = (pointing_settings.scroll_inverted != 0);
+
+    LOG_INF("Scroll scaler updated: %d/%d inverted=%d",
+            (int)studio_scroll_numerator,
+            (int)studio_scroll_denominator,
+            (int)studio_scroll_inverted);
 
 #if HAS_TRACKBALL
     if (trackball_dev == NULL || !device_is_ready(trackball_dev)) {
@@ -176,7 +209,12 @@ static void apply_sensitivity(void) {
  * This ensures saved sensitivity is restored after power cycle.
  */
 static int pointing_studio_init(void) {
-    /* Settings are loaded by this point, apply them */
+    /* Always apply scroll settings (even default 1/1) to initialize globals */
+    studio_scroll_numerator = (int32_t)pointing_settings.scroll_numerator;
+    studio_scroll_denominator = (int32_t)pointing_settings.scroll_denominator;
+    studio_scroll_inverted = (pointing_settings.scroll_inverted != 0);
+
+    /* Apply CPI if non-default */
     if (pointing_settings.cursor_denominator > 0 &&
         (pointing_settings.cursor_numerator != 1 ||
          pointing_settings.cursor_denominator != 1 ||
@@ -199,9 +237,15 @@ zmk_studio_Response get_sensitivity(const zmk_studio_Request *req) {
     resp.cursor.numerator = pointing_settings.cursor_numerator;
     resp.cursor.denominator = pointing_settings.cursor_denominator;
 
-    /* Always return scroll with valid defaults so the client knows scroll is supported */
+    /* Return scroll settings - use sign to encode inversion */
     resp.scroll.numerator = pointing_settings.scroll_numerator;
     resp.scroll.denominator = pointing_settings.scroll_denominator;
+
+    /* Encode inversion in the sign of scroll numerator */
+    if (pointing_settings.scroll_inverted) {
+        /* Use negative numerator to signal inversion to the client */
+        resp.scroll.numerator = -(int32_t)pointing_settings.scroll_numerator;
+    }
 
     /* Ensure we never return 0/0 - use 1/1 as default */
     if (resp.cursor.denominator == 0) {
@@ -215,10 +259,10 @@ zmk_studio_Response get_sensitivity(const zmk_studio_Request *req) {
 
     resp.cpi = compute_effective_cpi();
 
-    LOG_INF("get_sensitivity: cursor=%u/%u scroll=%u/%u cpi=%u",
+    LOG_INF("get_sensitivity: cursor=%u/%u scroll=%d/%u cpi=%u inv=%u",
             resp.cursor.numerator, resp.cursor.denominator,
-            resp.scroll.numerator, resp.scroll.denominator,
-            resp.cpi);
+            (int)resp.scroll.numerator, resp.scroll.denominator,
+            resp.cpi, pointing_settings.scroll_inverted);
 
     return POINTING_RESPONSE(get_sensitivity, resp);
 }
@@ -229,9 +273,9 @@ zmk_studio_Response set_sensitivity(const zmk_studio_Request *req) {
     const zmk_pointing_SetSensitivityRequest *set_req =
         &req->subsystem.pointing.request_type.set_sensitivity;
 
-    LOG_INF("set_sensitivity: cursor=%u/%u scroll=%u/%u cpi=%u",
+    LOG_INF("set_sensitivity: cursor=%u/%u scroll=%d/%u cpi=%u",
             set_req->cursor.numerator, set_req->cursor.denominator,
-            set_req->scroll.numerator, set_req->scroll.denominator,
+            (int)set_req->scroll.numerator, set_req->scroll.denominator,
             set_req->cpi);
 
     /* Validate cursor: denominator must not be zero */
@@ -248,14 +292,23 @@ zmk_studio_Response set_sensitivity(const zmk_studio_Request *req) {
     pointing_settings.cursor_numerator = set_req->cursor.numerator;
     pointing_settings.cursor_denominator = set_req->cursor.denominator;
 
-    /* Update scroll settings - if not provided (both 0), keep existing or use 1/1 default */
+    /* Update scroll settings */
     if (set_req->scroll.denominator > 0) {
-        pointing_settings.scroll_numerator = set_req->scroll.numerator;
+        /* Decode inversion from sign of numerator */
+        int32_t scroll_num = (int32_t)set_req->scroll.numerator;
+        if (scroll_num < 0) {
+            pointing_settings.scroll_numerator = (uint32_t)(-scroll_num);
+            pointing_settings.scroll_inverted = 1;
+        } else {
+            pointing_settings.scroll_numerator = (uint32_t)scroll_num;
+            pointing_settings.scroll_inverted = 0;
+        }
         pointing_settings.scroll_denominator = set_req->scroll.denominator;
     } else if (pointing_settings.scroll_denominator == 0) {
         /* Ensure we always have a valid scroll setting */
         pointing_settings.scroll_numerator = 1;
         pointing_settings.scroll_denominator = 1;
+        pointing_settings.scroll_inverted = 0;
     }
     /* else: keep existing scroll settings when not provided */
 
@@ -287,7 +340,11 @@ zmk_studio_Response set_sensitivity(const zmk_studio_Request *req) {
     resp.which_result = zmk_pointing_SetSensitivityResponse_ok_tag;
     resp.result.ok = true;
 
-    LOG_INF("set_sensitivity: success, effective CPI=%u", compute_effective_cpi());
+    LOG_INF("set_sensitivity: success, effective CPI=%u scroll=%u/%u inv=%u",
+            compute_effective_cpi(),
+            pointing_settings.scroll_numerator,
+            pointing_settings.scroll_denominator,
+            pointing_settings.scroll_inverted);
     return POINTING_RESPONSE(set_sensitivity, resp);
 }
 
@@ -297,8 +354,9 @@ static int pointing_settings_reset(void) {
     pointing_settings.scroll_numerator = 1;
     pointing_settings.scroll_denominator = 1;
     pointing_settings.cpi = 0;
+    pointing_settings.scroll_inverted = 0;
 
-    /* Apply default CPI */
+    /* Apply defaults */
     apply_sensitivity();
 
     return pointing_settings_save();
