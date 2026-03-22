@@ -461,6 +461,13 @@ config ZMK_COMBO_MAX_KEYS_PER_COMBO
     help
        Deprecated: This is now auto-calculated based on `key-positions` in devicetree
 
+config ZMK_COMBO_MAX_DYNAMIC_COMBOS
+    int "Maximum number of dynamic (runtime-managed) combos"
+    default 16
+    help
+       Maximum number of combos that can be managed at runtime via Studio RPC.
+       This includes both devicetree-defined combos and dynamically added ones.
+
 # Combo options
 endmenu
 
