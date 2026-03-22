@@ -39,6 +39,9 @@ struct temp_layer_data {
     struct temp_layer_state state;
 };
 
+/* Static Work Queue Items */
+static struct k_work_delayable layer_disable_works[MAX_LAYERS];
+
 /*
  * Global AML enabled flag.
  * When false, the temp_layer input processor will not activate the layer.
@@ -75,9 +78,6 @@ void zmk_temp_layer_set_aml_enabled(bool enabled) {
 
     LOG_INF("AML %s", enabled ? "enabled" : "disabled");
 }
-
-/* Static Work Queue Items */
-static struct k_work_delayable layer_disable_works[MAX_LAYERS];
 
 /* Position Search */
 static bool position_is_excluded(const struct temp_layer_config *config, uint32_t position) {
