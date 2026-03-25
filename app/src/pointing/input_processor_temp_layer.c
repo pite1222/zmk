@@ -20,6 +20,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 /* Constants and Types */
 #define MAX_LAYERS ZMK_KEYMAP_LAYERS_LEN
+#define TEMP_LAYER_MAX_EXCLUDED_POSITIONS 40
 
 struct temp_layer_config {
     int16_t require_prior_idle_ms;
@@ -33,10 +34,19 @@ struct temp_layer_state {
     int64_t last_tapped_timestamp;
 };
 
+/* Runtime-configurable AML settings (overrides DTS config when set) */
+struct temp_layer_runtime_config {
+    bool has_runtime_config;
+    int16_t require_prior_idle_ms;
+    uint16_t excluded_positions[TEMP_LAYER_MAX_EXCLUDED_POSITIONS];
+    size_t num_positions;
+};
+
 struct temp_layer_data {
     const struct device *dev;
     struct k_mutex lock;
     struct temp_layer_state state;
+    struct temp_layer_runtime_config runtime;
 };
 
 /* Static Work Queue Items */
@@ -80,25 +90,43 @@ void zmk_temp_layer_set_aml_enabled(bool enabled) {
 }
 
 /* Position Search */
-static bool position_is_excluded(const struct temp_layer_config *config, uint32_t position) {
-    if (!config->excluded_positions || !config->num_positions) {
+static bool position_is_excluded(const struct temp_layer_config *config,
+                                  const struct temp_layer_runtime_config *runtime,
+                                  uint32_t position) {
+    /* Use runtime config if available */
+    if (runtime->has_runtime_config) {
+        if (!runtime->num_positions) {
+            return false;
+        }
+        for (size_t i = 0; i < runtime->num_positions; i++) {
+            if (runtime->excluded_positions[i] == position) {
+                return true;
+            }
+        }
         return false;
     }
 
+    /* Fall back to DTS config */
+    if (!config->excluded_positions || !config->num_positions) {
+        return false;
+    }
     const uint16_t *end = config->excluded_positions + config->num_positions;
     for (const uint16_t *pos = config->excluded_positions; pos < end; pos++) {
         if (*pos == position) {
             return true;
         }
     }
-
     return false;
 }
 
 /* Timing Check */
-static bool should_quick_tap(const struct temp_layer_config *config, int64_t last_tapped,
-                             int64_t current_time) {
-    return (last_tapped + config->require_prior_idle_ms) > current_time;
+static bool should_quick_tap(const struct temp_layer_config *config,
+                              const struct temp_layer_runtime_config *runtime,
+                              int64_t last_tapped, int64_t current_time) {
+    int16_t idle_ms = runtime->has_runtime_config
+        ? runtime->require_prior_idle_ms
+        : config->require_prior_idle_ms;
+    return (last_tapped + idle_ms) > current_time;
 }
 
 /* Layer State Management */
@@ -198,8 +226,11 @@ static int handle_position_state_changed(const struct device *dev, const zmk_eve
 
     const struct temp_layer_config *cfg = dev->config;
 
-    if (data->state.is_active && cfg->excluded_positions && cfg->num_positions > 0) {
-        if (!position_is_excluded(cfg, ev->position)) {
+    if (data->state.is_active) {
+        bool has_excluded = data->runtime.has_runtime_config
+            ? (data->runtime.num_positions > 0)
+            : (cfg->excluded_positions && cfg->num_positions > 0);
+        if (has_excluded && !position_is_excluded(cfg, &data->runtime, ev->position)) {
             LOG_DBG("Position not excluded, deactivating layer");
             update_layer_state(&data->state, false);
         }
@@ -290,7 +321,7 @@ static int temp_layer_handle_event(const struct device *dev, struct input_event 
     data->state.toggle_layer = param1;
 
     if (!data->state.is_active &&
-        !should_quick_tap(cfg, data->state.last_tapped_timestamp, k_uptime_get())) {
+        !should_quick_tap(cfg, &data->runtime, data->state.last_tapped_timestamp, k_uptime_get())) {
         struct layer_state_action action = {.layer = param1, .activate = true};
 
         int ret = k_msgq_put(&temp_layer_action_msgq, &action, K_MSEC(10));
@@ -310,9 +341,79 @@ static int temp_layer_handle_event(const struct device *dev, struct input_event 
     return ZMK_INPUT_PROC_CONTINUE;
 }
 
+/* Public API: Set runtime AML configuration */
+int zmk_temp_layer_set_config(int16_t require_prior_idle_ms,
+                               const uint32_t *excluded_positions, size_t num_positions) {
+    const struct device *dev = DEVICE_DT_INST_GET(0);
+    if (!dev) {
+        LOG_ERR("temp_layer device not found");
+        return -ENODEV;
+    }
+
+    struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
+
+    int ret = k_mutex_lock(&data->lock, K_FOREVER);
+    if (ret < 0) {
+        return ret;
+    }
+
+    data->runtime.has_runtime_config = true;
+    data->runtime.require_prior_idle_ms = require_prior_idle_ms;
+
+    size_t count = MIN(num_positions, TEMP_LAYER_MAX_EXCLUDED_POSITIONS);
+    data->runtime.num_positions = count;
+    for (size_t i = 0; i < count; i++) {
+        data->runtime.excluded_positions[i] = (uint16_t)excluded_positions[i];
+    }
+
+    LOG_INF("AML runtime config updated: idle_ms=%d, excluded_count=%zu",
+            require_prior_idle_ms, count);
+
+    k_mutex_unlock(&data->lock);
+    return 0;
+}
+
+/* Public API: Get runtime AML configuration */
+int zmk_temp_layer_get_config(int16_t *require_prior_idle_ms_out,
+                               uint32_t *excluded_positions_out, size_t max_positions,
+                               size_t *num_positions_out) {
+    const struct device *dev = DEVICE_DT_INST_GET(0);
+    if (!dev) {
+        return -ENODEV;
+    }
+
+    struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
+    const struct temp_layer_config *cfg = dev->config;
+
+    int ret = k_mutex_lock(&data->lock, K_FOREVER);
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (data->runtime.has_runtime_config) {
+        *require_prior_idle_ms_out = data->runtime.require_prior_idle_ms;
+        size_t count = MIN(data->runtime.num_positions, max_positions);
+        *num_positions_out = count;
+        for (size_t i = 0; i < count; i++) {
+            excluded_positions_out[i] = data->runtime.excluded_positions[i];
+        }
+    } else {
+        *require_prior_idle_ms_out = cfg->require_prior_idle_ms;
+        size_t count = MIN(cfg->num_positions, max_positions);
+        *num_positions_out = count;
+        for (size_t i = 0; i < count; i++) {
+            excluded_positions_out[i] = cfg->excluded_positions[i];
+        }
+    }
+
+    k_mutex_unlock(&data->lock);
+    return 0;
+}
+
 static int temp_layer_init(const struct device *dev) {
     struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
     k_mutex_init(&data->lock);
+    data->runtime.has_runtime_config = false;
 
     for (int i = 0; i < MAX_LAYERS; i++) {
         k_work_init_delayable(&layer_disable_works[i], layer_disable_callback);

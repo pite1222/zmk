@@ -437,6 +437,71 @@ ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECU
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_auto_layer, ZMK_STUDIO_RPC_HANDLER_SECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_auto_layer, ZMK_STUDIO_RPC_HANDLER_SECURED);
 
+/* ===== AML (Auto Mouse Layer) RPC Handlers ===== */
+
+extern int zmk_temp_layer_get_config(int16_t *require_prior_idle_ms_out,
+                                     uint32_t *excluded_positions_out, size_t max_positions,
+                                     size_t *num_positions_out);
+extern int zmk_temp_layer_set_config(int16_t require_prior_idle_ms,
+                                     const uint32_t *excluded_positions, size_t num_positions);
+
+#define AML_MAX_EXCLUDED_POSITIONS 40
+
+zmk_studio_Response get_auto_layer(const zmk_studio_Request *req) {
+    zmk_pointing_GetAutoLayerResponse resp = zmk_pointing_GetAutoLayerResponse_init_zero;
+    resp.enabled = true;
+
+    int16_t idle_ms = 0;
+    uint32_t positions[AML_MAX_EXCLUDED_POSITIONS];
+    size_t num_positions = 0;
+
+    int ret = zmk_temp_layer_get_config(&idle_ms, positions, AML_MAX_EXCLUDED_POSITIONS,
+                                        &num_positions);
+    if (ret == 0) {
+        resp.require_prior_idle_ms = (uint32_t)idle_ms;
+        resp.excluded_positions_count = (uint32_t)num_positions;
+        for (size_t i = 0; i < num_positions && i < AML_MAX_EXCLUDED_POSITIONS; i++) {
+            resp.excluded_positions[i] = positions[i];
+        }
+    }
+
+    LOG_INF("get_auto_layer: idle_ms=%d excluded_count=%zu", idle_ms, num_positions);
+    return POINTING_RESPONSE(get_auto_layer, resp);
+}
+
+zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
+    const zmk_pointing_SetAutoLayerRequest *set_req =
+        &req->subsystem.pointing.request_type.set_auto_layer;
+
+    zmk_pointing_SetAutoLayerResponse resp = zmk_pointing_SetAutoLayerResponse_init_zero;
+
+    int16_t idle_ms = (int16_t)set_req->require_prior_idle_ms;
+
+    uint32_t positions[AML_MAX_EXCLUDED_POSITIONS];
+    size_t num_positions = 0;
+    for (size_t i = 0; i < set_req->excluded_positions_count && i < AML_MAX_EXCLUDED_POSITIONS; i++) {
+        positions[i] = set_req->excluded_positions[i];
+        num_positions++;
+    }
+
+    LOG_INF("set_auto_layer: idle_ms=%d excluded_count=%zu", idle_ms, num_positions);
+
+    int ret = zmk_temp_layer_set_config(idle_ms, positions, num_positions);
+    if (ret < 0) {
+        LOG_WRN("set_auto_layer: zmk_temp_layer_set_config failed: %d", ret);
+        resp.which_result = zmk_pointing_SetAutoLayerResponse_err_tag;
+        resp.result.err = zmk_pointing_SetAutoLayerErrorCode_SET_AUTO_LAYER_ERR_UNSUPPORTED;
+        return POINTING_RESPONSE(set_auto_layer, resp);
+    }
+
+    resp.which_result = zmk_pointing_SetAutoLayerResponse_ok_tag;
+    resp.result.ok = true;
+    return POINTING_RESPONSE(set_auto_layer, resp);
+}
+
+ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_auto_layer, ZMK_STUDIO_RPC_HANDLER_SECURED);
+ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_auto_layer, ZMK_STUDIO_RPC_HANDLER_SECURED);
+
 static int event_mapper(const zmk_event_t *eh, zmk_studio_Notification *n) { return 0; }
 
 ZMK_RPC_EVENT_MAPPER(pointing, event_mapper);
