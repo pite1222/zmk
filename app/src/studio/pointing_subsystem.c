@@ -387,55 +387,8 @@ static int pointing_settings_reset(void) {
 
 ZMK_RPC_SUBSYSTEM_SETTINGS_RESET(pointing, pointing_settings_reset);
 
-zmk_studio_Response get_auto_layer(const zmk_studio_Request *req) {
-    LOG_DBG("get_auto_layer called");
-
-    zmk_pointing_GetAutoLayerResponse resp =
-        zmk_pointing_GetAutoLayerResponse_init_zero;
-
-    resp.enabled = zmk_temp_layer_get_aml_enabled();
-
-    LOG_INF("get_auto_layer: enabled=%d", resp.enabled);
-
-    return POINTING_RESPONSE(get_auto_layer, resp);
-}
-
-zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
-    LOG_DBG("set_auto_layer called");
-
-    const zmk_pointing_SetAutoLayerRequest *set_req =
-        &req->subsystem.pointing.request_type.set_auto_layer;
-
-    LOG_INF("set_auto_layer: enabled=%d", set_req->enabled);
-
-    /* Apply immediately */
-    zmk_temp_layer_set_aml_enabled(set_req->enabled);
-
-    /* Persist to flash */
-    pointing_settings.aml_enabled = set_req->enabled ? 1 : 0;
-    int ret = pointing_settings_save();
-    if (ret < 0) {
-        LOG_WRN("Failed to save AML setting: %d", ret);
-        zmk_pointing_SetAutoLayerResponse resp =
-            zmk_pointing_SetAutoLayerResponse_init_zero;
-        resp.which_result = zmk_pointing_SetAutoLayerResponse_err_tag;
-        resp.result.err = zmk_pointing_SetAutoLayerErrorCode_SET_AUTO_LAYER_ERR_STORAGE;
-        return POINTING_RESPONSE(set_auto_layer, resp);
-    }
-
-    zmk_pointing_SetAutoLayerResponse resp =
-        zmk_pointing_SetAutoLayerResponse_init_zero;
-    resp.which_result = zmk_pointing_SetAutoLayerResponse_ok_tag;
-    resp.result.ok = true;
-
-    LOG_INF("set_auto_layer: success, enabled=%d", set_req->enabled);
-    return POINTING_RESPONSE(set_auto_layer, resp);
-}
-
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECURED);
-ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_auto_layer, ZMK_STUDIO_RPC_HANDLER_SECURED);
-ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_auto_layer, ZMK_STUDIO_RPC_HANDLER_SECURED);
 
 /* ===== AML (Auto Mouse Layer) RPC Handlers ===== */
 
