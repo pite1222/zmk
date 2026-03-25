@@ -57,6 +57,11 @@ config ZMK_INPUT_PROCESSOR_SCALER
     default y
     depends on DT_HAS_ZMK_INPUT_PROCESSOR_SCALER_ENABLED
 
+config ZMK_INPUT_PROCESSOR_STUDIO_SCALER
+    bool "Studio Dynamic Scaler Input Processor"
+    default y
+    depends on DT_HAS_ZMK_INPUT_PROCESSOR_STUDIO_SCALER_ENABLED
+
 config ZMK_INPUT_PROCESSOR_CODE_MAPPER
     bool "Code Mapper Input Processor"
     default y
@@ -77,6 +82,11 @@ if ZMK_INPUT_SPLIT
 config ZMK_INPUT_SPLIT_INIT_PRIORITY
     int "Input Split initialization priority"
     default INPUT_INIT_PRIORITY
+
+
+config ZMK_INPUT_SPLIT_MAX_TRACKED_KEYS
+    int "Input Split max tracked keys to release on peripheral disconnect"
+    default 5
 
 endif # ZMK_INPUT_SPLIT
 
