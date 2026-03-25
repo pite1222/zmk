@@ -78,7 +78,7 @@ void zmk_temp_layer_set_aml_enabled(bool enabled) {
 
         if (data->state.is_active) {
             data->state.is_active = false;
-            zmk_keymap_layer_deactivate(data->state.toggle_layer, false);
+            zmk_keymap_layer_deactivate(data->state.toggle_layer);
             k_work_cancel_delayable(&layer_disable_works[data->state.toggle_layer]);
             LOG_INF("AML disabled: deactivated layer %d", data->state.toggle_layer);
         }
@@ -137,10 +137,10 @@ static void update_layer_state(struct temp_layer_state *state, bool activate) {
 
     state->is_active = activate;
     if (activate) {
-        zmk_keymap_layer_activate(state->toggle_layer, false);
+        zmk_keymap_layer_activate(state->toggle_layer);
         LOG_DBG("Layer %d activated", state->toggle_layer);
     } else {
-        zmk_keymap_layer_deactivate(state->toggle_layer, false);
+        zmk_keymap_layer_deactivate(state->toggle_layer);
         LOG_DBG("Layer %d deactivated", state->toggle_layer);
     }
 }
