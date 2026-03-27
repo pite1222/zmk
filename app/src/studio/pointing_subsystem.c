@@ -402,7 +402,7 @@ extern int zmk_temp_layer_set_config(int16_t require_prior_idle_ms,
 
 zmk_studio_Response get_auto_layer(const zmk_studio_Request *req) {
     zmk_pointing_GetAutoLayerResponse resp = zmk_pointing_GetAutoLayerResponse_init_zero;
-    resp.enabled = true;
+    resp.enabled = zmk_temp_layer_get_aml_enabled();
 
     int16_t idle_ms = 0;
     uint32_t positions[AML_MAX_EXCLUDED_POSITIONS];
@@ -437,8 +437,10 @@ zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
         num_positions++;
     }
 
-    LOG_INF("set_auto_layer: idle_ms=%d excluded_count=%zu", idle_ms, num_positions);
+    LOG_INF("set_auto_layer: enabled=%d idle_ms=%d excluded_count=%zu",
+            (int)set_req->enabled, idle_ms, num_positions);
 
+    /* Apply excluded positions config */
     int ret = zmk_temp_layer_set_config(idle_ms, positions, num_positions);
     if (ret < 0) {
         LOG_WRN("set_auto_layer: zmk_temp_layer_set_config failed: %d", ret);
@@ -446,6 +448,11 @@ zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
         resp.result.err = zmk_pointing_SetAutoLayerErrorCode_SET_AUTO_LAYER_ERR_UNSUPPORTED;
         return POINTING_RESPONSE(set_auto_layer, resp);
     }
+
+    /* Apply enabled state and persist it */
+    zmk_temp_layer_set_aml_enabled(set_req->enabled);
+    pointing_settings.aml_enabled = set_req->enabled ? 1 : 0;
+    pointing_settings_save();
 
     resp.which_result = zmk_pointing_SetAutoLayerResponse_ok_tag;
     resp.result.ok = true;
