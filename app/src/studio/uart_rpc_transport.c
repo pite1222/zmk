@@ -130,12 +130,25 @@ static void serial_cb(const struct device *dev, void *user_data) {
             uint32_t claim_len = ring_buf_get_claim(tx_buf, &buf, tx_buf->size);
 
             if (claim_len == 0) {
-                continue;
+                // Cannot claim any bytes from the ring buffer; the UART FIFO
+                // is likely full. Break out of the ISR and wait for the next
+                // TX-ready interrupt instead of spinning forever.
+                break;
             }
 
             int sent = uart_fifo_fill(uart_dev, buf, claim_len);
+            if (sent <= 0) {
+                // UART FIFO full; stop draining and wait for next TX interrupt
+                ring_buf_get_finish(tx_buf, 0);
+                break;
+            }
 
-            ring_buf_get_finish(tx_buf, MAX(sent, 0));
+            ring_buf_get_finish(tx_buf, sent);
+        }
+        // If there is still data remaining, keep TX IRQ enabled so we get
+        // called again when the FIFO drains.
+        if (ring_buf_size_get(tx_buf) == 0) {
+            uart_irq_tx_disable(uart_dev);
         }
     }
 }
