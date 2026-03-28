@@ -77,6 +77,13 @@ static struct bt_data zmk_ble_ad[] = {
                   ),
 };
 
+/* Scan response data: include device name so it appears in Web Bluetooth picker
+ * even when using directed advertising (where the main AD packet has no name field).
+ */
+static struct bt_data zmk_ble_sd[] = {
+    BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+};
+
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 
 static bt_addr_le_t peripheral_addrs[ZMK_SPLIT_BLE_PERIPHERAL_COUNT];
@@ -159,7 +166,7 @@ bool zmk_ble_profile_is_connected(uint8_t index) {
         return 0;                                                                                  \
     }                                                                                              \
     err = bt_le_adv_start(BT_LE_ADV_CONN_DIR_LOW_DUTY(addr), zmk_ble_ad, ARRAY_SIZE(zmk_ble_ad),   \
-                          NULL, 0);                                                                \
+                          zmk_ble_sd, ARRAY_SIZE(zmk_ble_sd));                                    \
     if (err) {                                                                                     \
         LOG_ERR("Advertising failed to start (err %d)", err);                                      \
         return err;                                                                                \
