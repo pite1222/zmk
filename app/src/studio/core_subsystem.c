@@ -8,6 +8,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
+#include <zephyr/bluetooth/bluetooth.h>
 #include <pb_encode.h>
 #include <zmk/ble.h>
 #include <zmk/studio/core.h>
@@ -91,7 +92,13 @@ zmk_studio_Response get_ble_profiles(const zmk_studio_Request *req) {
 
         if (!is_open) {
             char *name = zmk_ble_profile_name(i);
-            strncpy(p->name, name, sizeof(p->name) - 1);
+            if (name && name[0] != '\0') {
+                strncpy(p->name, name, sizeof(p->name) - 1);
+            } else {
+                // No device name stored — use BLE address as fallback
+                bt_addr_le_t *addr = zmk_ble_profile_address(i);
+                bt_addr_le_to_str(addr, p->name, sizeof(p->name));
+            }
             p->name[sizeof(p->name) - 1] = '\0';
         }
         p->connected = zmk_ble_profile_is_connected(i);
