@@ -46,6 +46,18 @@ static bool encode_device_info_serial_number(pb_ostream_t *stream, const pb_fiel
 
 #endif // IS_ENABLED(CONFIG_HWINFO)
 
+#ifdef CONFIG_CONDUCTOR_FIRMWARE_VERSION
+static bool encode_device_info_firmware_version(pb_ostream_t *stream, const pb_field_t *field,
+                                                void *const *arg) {
+    if (!pb_encode_tag_for_field(stream, field)) {
+        return false;
+    }
+
+    return pb_encode_string(stream, CONFIG_CONDUCTOR_FIRMWARE_VERSION,
+                            strlen(CONFIG_CONDUCTOR_FIRMWARE_VERSION));
+}
+#endif
+
 zmk_studio_Response get_device_info(const zmk_studio_Request *req) {
     LOG_DBG("");
     zmk_core_GetDeviceInfoResponse resp = zmk_core_GetDeviceInfoResponse_init_zero;
@@ -54,6 +66,9 @@ zmk_studio_Response get_device_info(const zmk_studio_Request *req) {
 #if IS_ENABLED(CONFIG_HWINFO)
     resp.serial_number.funcs.encode = encode_device_info_serial_number;
 #endif // IS_ENABLED(CONFIG_HWINFO)
+#ifdef CONFIG_CONDUCTOR_FIRMWARE_VERSION
+    resp.firmware_version.funcs.encode = encode_device_info_firmware_version;
+#endif
 
     return CORE_RESPONSE(get_device_info, resp);
 }
