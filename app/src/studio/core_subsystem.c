@@ -9,6 +9,7 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <pb_encode.h>
+#include <zmk/ble.h>
 #include <zmk/studio/core.h>
 #include <zmk/studio/rpc.h>
 
@@ -76,9 +77,37 @@ zmk_studio_Response reset_settings(const zmk_studio_Request *req) {
     return CORE_RESPONSE(reset_settings, true);
 }
 
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+zmk_studio_Response get_ble_profiles(const zmk_studio_Request *req) {
+    LOG_DBG("");
+    zmk_core_GetBleProfilesResponse resp = zmk_core_GetBleProfilesResponse_init_zero;
+
+    resp.active_index = zmk_ble_active_profile_index();
+    resp.profiles_count = 0;
+
+    for (int i = 0; i < ZMK_BLE_PROFILE_COUNT && i < 5; i++) {
+        zmk_core_BleProfileInfo *p = &resp.profiles[i];
+        bool is_open = zmk_ble_profile_is_open(i);
+
+        if (!is_open) {
+            char *name = zmk_ble_profile_name(i);
+            strncpy(p->name, name, sizeof(p->name) - 1);
+            p->name[sizeof(p->name) - 1] = '\0';
+        }
+        p->connected = zmk_ble_profile_is_connected(i);
+        resp.profiles_count++;
+    }
+
+    return CORE_RESPONSE(get_ble_profiles, resp);
+}
+#endif /* IS_ENABLED(CONFIG_ZMK_BLE) */
+
 ZMK_RPC_SUBSYSTEM_HANDLER(core, get_device_info, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(core, get_lock_state, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(core, reset_settings, ZMK_STUDIO_RPC_HANDLER_SECURED);
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+ZMK_RPC_SUBSYSTEM_HANDLER(core, get_ble_profiles, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
+#endif
 
 static int core_event_mapper(const zmk_event_t *eh, zmk_studio_Notification *n) {
     struct zmk_studio_core_lock_state_changed *lock_ev = as_zmk_studio_core_lock_state_changed(eh);

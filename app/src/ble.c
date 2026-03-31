@@ -362,6 +362,13 @@ struct bt_conn *zmk_ble_active_profile_conn(void) {
 
 char *zmk_ble_active_profile_name(void) { return profiles[active_profile].name; }
 
+char *zmk_ble_profile_name(uint8_t index) {
+    if (index >= ZMK_BLE_PROFILE_COUNT) {
+        return "";
+    }
+    return profiles[index].name;
+}
+
 int zmk_ble_set_device_name(char *name) {
     // Copy new name to advertising parameters
     int err = bt_set_name(name);
