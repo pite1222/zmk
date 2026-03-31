@@ -109,6 +109,13 @@ config ZMK_STUDIO_RPC_TX_BUF_SIZE
     int "TX Buffer Size"
     default 64
 
+config ZMK_STUDIO_FIRMWARE_VERSION
+    string "Firmware version string reported via Studio RPC"
+    default ""
+    help
+      Semantic version string (e.g. "0.4.0") included in the
+      getDeviceInfo RPC response. Leave empty to omit.
+
 endif
 
 endif
