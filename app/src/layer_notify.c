@@ -33,7 +33,7 @@ static void send_layer_key(uint8_t layer, bool pressed) {
     } else {
         zmk_hid_keyboard_release(key);
     }
-    zmk_endpoints_send_report(HID_USAGE_KEY);
+    zmk_endpoint_send_report(HID_USAGE_KEY);
 }
 
 static struct k_work_delayable layer_release_work;
