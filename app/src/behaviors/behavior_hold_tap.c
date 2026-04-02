@@ -18,8 +18,49 @@
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/keycode_state_changed.h>
 #include <zmk/behavior.h>
+#include <zephyr/settings/settings.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+
+// Global tapping-term override. -1 = use per-behavior devicetree default.
+static int32_t tapping_term_override = -1;
+
+static inline int32_t effective_tapping_term(const struct behavior_hold_tap_config *cfg) {
+    return (tapping_term_override >= 0) ? tapping_term_override : cfg->tapping_term_ms;
+}
+
+int zmk_hold_tap_get_tapping_term(void) {
+    return tapping_term_override;
+}
+
+void zmk_hold_tap_set_tapping_term(int32_t ms) {
+    tapping_term_override = ms;
+    LOG_INF("Tapping term override set to %d ms", ms);
+    settings_save_one("hold_tap/tapping_term", &tapping_term_override,
+                      sizeof(tapping_term_override));
+}
+
+int zmk_hold_tap_get_default_tapping_term(void) {
+    // Return the devicetree default from the first hold-tap instance
+    return DT_INST_PROP(0, tapping_term_ms);
+}
+
+static int hold_tap_settings_load_cb(const char *name, size_t len,
+                                     settings_read_cb read_cb, void *cb_arg) {
+    const char *next;
+    if (settings_name_steq(name, "tapping_term", &next) && !next) {
+        if (len != sizeof(tapping_term_override)) return -EINVAL;
+        int rc = read_cb(cb_arg, &tapping_term_override, sizeof(tapping_term_override));
+        if (rc >= 0) {
+            LOG_INF("Loaded tapping term override: %d ms", tapping_term_override);
+        }
+        return MIN(rc, 0);
+    }
+    return -ENOENT;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(hold_tap_settings, "hold_tap", NULL,
+                               hold_tap_settings_load_cb, NULL, NULL);
 
 #if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
 
@@ -634,7 +675,7 @@ static int on_hold_tap_binding_pressed(struct zmk_behavior_binding *binding,
 
     // if this behavior was queued we have to adjust the timer to only
     // wait for the remaining time.
-    int32_t tapping_term_ms_left = (hold_tap->timestamp + cfg->tapping_term_ms) - k_uptime_get();
+    int32_t tapping_term_ms_left = (hold_tap->timestamp + effective_tapping_term(cfg)) - k_uptime_get();
     k_work_schedule(&hold_tap->work, K_MSEC(tapping_term_ms_left));
 
     return ZMK_BEHAVIOR_OPAQUE;
@@ -651,7 +692,7 @@ static int on_hold_tap_binding_released(struct zmk_behavior_binding *binding,
     // If these events were queued, the timer event may be queued too late or not at all.
     // We insert a timer event before the TH_KEY_UP event to verify.
     int work_cancel_result = k_work_cancel_delayable(&hold_tap->work);
-    if (event.timestamp > (hold_tap->timestamp + hold_tap->config->tapping_term_ms)) {
+    if (event.timestamp > (hold_tap->timestamp + effective_tapping_term(hold_tap->config))) {
         decide_hold_tap(hold_tap, HT_TIMER_EVENT);
     }
 
@@ -758,7 +799,7 @@ static int position_state_changed_listener(const zmk_event_t *eh) {
     // We make a timer decision before the other key events are handled if the timer would
     // have run out.
     if (ev->timestamp >
-        (undecided_hold_tap->timestamp + undecided_hold_tap->config->tapping_term_ms)) {
+        (undecided_hold_tap->timestamp + undecided_effective_tapping_term(hold_tap->config))) {
         decide_hold_tap(undecided_hold_tap, HT_TIMER_EVENT);
     }
 

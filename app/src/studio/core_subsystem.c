@@ -11,6 +11,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zephyr/bluetooth/bluetooth.h>
 #include <pb_encode.h>
 #include <zmk/ble.h>
+#include <zmk/behavior.h>
 #include <zmk/studio/core.h>
 #include <zmk/studio/rpc.h>
 
@@ -124,12 +125,30 @@ zmk_studio_Response get_ble_profiles(const zmk_studio_Request *req) {
 }
 #endif /* IS_ENABLED(CONFIG_ZMK_BLE) */
 
+zmk_studio_Response get_tapping_term(const zmk_studio_Request *req) {
+    LOG_DBG("");
+    zmk_core_GetTappingTermResponse resp = zmk_core_GetTappingTermResponse_init_zero;
+    int32_t override = zmk_hold_tap_get_tapping_term();
+    resp.tapping_term_ms = (override >= 0) ? override : zmk_hold_tap_get_default_tapping_term();
+    resp.default_tapping_term_ms = zmk_hold_tap_get_default_tapping_term();
+    return CORE_RESPONSE(get_tapping_term, resp);
+}
+
+zmk_studio_Response set_tapping_term(const zmk_studio_Request *req) {
+    LOG_DBG("");
+    uint32_t ms = req->core.request_type.set_tapping_term.tapping_term_ms;
+    zmk_hold_tap_set_tapping_term((int32_t)ms);
+    return CORE_RESPONSE(set_tapping_term, true);
+}
+
 ZMK_RPC_SUBSYSTEM_HANDLER(core, get_device_info, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(core, get_lock_state, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(core, reset_settings, ZMK_STUDIO_RPC_HANDLER_SECURED);
 #if IS_ENABLED(CONFIG_ZMK_BLE)
 ZMK_RPC_SUBSYSTEM_HANDLER(core, get_ble_profiles, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
 #endif
+ZMK_RPC_SUBSYSTEM_HANDLER(core, get_tapping_term, ZMK_STUDIO_RPC_HANDLER_UNSECURED);
+ZMK_RPC_SUBSYSTEM_HANDLER(core, set_tapping_term, ZMK_STUDIO_RPC_HANDLER_SECURED);
 
 static int core_event_mapper(const zmk_event_t *eh, zmk_studio_Notification *n) {
     struct zmk_studio_core_lock_state_changed *lock_ev = as_zmk_studio_core_lock_state_changed(eh);

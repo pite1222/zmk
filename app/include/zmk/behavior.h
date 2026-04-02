@@ -77,3 +77,8 @@ zmk_behavior_local_id_t zmk_behavior_get_local_id(const char *name);
  * @retval NULL if the behavior is not found or its initialization function failed.
  */
 const char *zmk_behavior_find_behavior_name_from_local_id(zmk_behavior_local_id_t local_id);
+
+// Runtime tapping-term override (set via ZMK Studio RPC)
+int zmk_hold_tap_get_tapping_term(void);
+void zmk_hold_tap_set_tapping_term(int32_t ms);
+int zmk_hold_tap_get_default_tapping_term(void);
