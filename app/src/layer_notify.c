@@ -22,6 +22,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <dt-bindings/zmk/keys.h>
 
 // F13=0x68, F14=0x69, ..., F20=0x6F in HID usage table
+// F13-F20 are rarely used and detectable on all platforms
 #define LAYER_NOTIFY_BASE_KEY 0x68  // F13
 
 static void send_layer_key(uint8_t layer, bool pressed) {
