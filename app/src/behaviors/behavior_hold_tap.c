@@ -798,7 +798,7 @@ static int position_state_changed_listener(const zmk_event_t *eh) {
     // We make a timer decision before the other key events are handled if the timer would
     // have run out.
     if (ev->timestamp >
-        (undecided_hold_tap->timestamp + undecided_effective_tapping_term(hold_tap->config))) {
+        (undecided_hold_tap->timestamp + effective_tapping_term(undecided_hold_tap->config))) {
         decide_hold_tap(undecided_hold_tap, HT_TIMER_EVENT);
     }
 
