@@ -25,10 +25,6 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 // Global tapping-term override. -1 = use per-behavior devicetree default.
 static int32_t tapping_term_override = -1;
 
-static inline int32_t effective_tapping_term(const struct behavior_hold_tap_config *cfg) {
-    return (tapping_term_override >= 0) ? tapping_term_override : cfg->tapping_term_ms;
-}
-
 int zmk_hold_tap_get_tapping_term(void) {
     return tapping_term_override;
 }
@@ -41,7 +37,6 @@ void zmk_hold_tap_set_tapping_term(int32_t ms) {
 }
 
 int zmk_hold_tap_get_default_tapping_term(void) {
-    // Return the devicetree default from the first hold-tap instance
     return DT_INST_PROP(0, tapping_term_ms);
 }
 
@@ -107,6 +102,10 @@ struct behavior_hold_tap_config {
     int32_t hold_trigger_key_positions_len;
     int32_t hold_trigger_key_positions[];
 };
+
+static inline int32_t effective_tapping_term(const struct behavior_hold_tap_config *cfg) {
+    return (tapping_term_override >= 0) ? tapping_term_override : cfg->tapping_term_ms;
+}
 
 struct behavior_hold_tap_data {
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_METADATA)
