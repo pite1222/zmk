@@ -136,7 +136,7 @@ zmk_studio_Response get_tapping_term(const zmk_studio_Request *req) {
 
 zmk_studio_Response set_tapping_term(const zmk_studio_Request *req) {
     LOG_DBG("");
-    uint32_t ms = req->core.request_type.set_tapping_term.tapping_term_ms;
+    uint32_t ms = req->subsystem.core.request_type.set_tapping_term.tapping_term_ms;
     zmk_hold_tap_set_tapping_term((int32_t)ms);
     return CORE_RESPONSE(set_tapping_term, true);
 }
