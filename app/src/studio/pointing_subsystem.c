@@ -92,6 +92,18 @@ static struct {
     .aml_excluded_count = 0,
 };
 
+/* AML-specific persistent storage */
+static struct {
+    uint8_t enabled;
+    int16_t idle_ms;
+    uint8_t excluded_count;
+    uint8_t excluded_positions[AML_SETTINGS_MAX_EXCLUDED];
+} aml_persist = {
+    .enabled = 1,
+    .idle_ms = 0,
+    .excluded_count = 0,
+};
+
 /* Forward declaration for the settings handler */
 static int pointing_settings_set(const char *name, size_t len,
                                   settings_read_cb read_cb, void *cb_arg);
@@ -148,18 +160,6 @@ static int pointing_settings_save(void) {
     return settings_save_one("pointing/studio/sensitivity",
                               &pointing_settings, sizeof(pointing_settings));
 }
-
-/* AML-specific persistent storage */
-static struct {
-    uint8_t enabled;
-    int16_t idle_ms;
-    uint8_t excluded_count;
-    uint8_t excluded_positions[AML_SETTINGS_MAX_EXCLUDED];
-} aml_persist = {
-    .enabled = 1,
-    .idle_ms = 0,
-    .excluded_count = 0,
-};
 
 static int aml_settings_save(void) {
     return settings_save_one("pointing/studio/aml",
