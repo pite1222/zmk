@@ -65,6 +65,8 @@ volatile bool studio_scroll_inverted = false;
  * Default is 1/1 (no scaling change), CPI = 0 means "use default".
  * scroll_inverted: 0 = normal, 1 = inverted (natural scrolling)
  */
+#define AML_SETTINGS_MAX_EXCLUDED 40
+
 static struct {
     uint32_t cursor_numerator;
     uint32_t cursor_denominator;
@@ -73,6 +75,9 @@ static struct {
     uint32_t cpi;
     uint32_t scroll_inverted;
     uint32_t aml_enabled;
+    int16_t aml_idle_ms;
+    uint8_t aml_excluded_count;
+    uint8_t aml_excluded_positions[AML_SETTINGS_MAX_EXCLUDED];
 } pointing_settings = {
     .cursor_numerator = 1,
     .cursor_denominator = 1,
@@ -81,6 +86,8 @@ static struct {
     .cpi = 0,
     .scroll_inverted = 0,
     .aml_enabled = 1,
+    .aml_idle_ms = 0,
+    .aml_excluded_count = 0,
 };
 
 /* Forward declaration for the settings handler */
@@ -233,7 +240,17 @@ static int pointing_studio_init(void) {
 
     /* Restore AML enabled state */
     zmk_temp_layer_set_aml_enabled(pointing_settings.aml_enabled != 0);
-    LOG_INF("Restored AML enabled state: %u", pointing_settings.aml_enabled);
+    /* Restore AML excluded positions and idle_ms from settings */
+    if (pointing_settings.aml_excluded_count > 0) {
+        uint32_t positions[AML_SETTINGS_MAX_EXCLUDED];
+        for (size_t i = 0; i < pointing_settings.aml_excluded_count; i++) {
+            positions[i] = pointing_settings.aml_excluded_positions[i];
+        }
+        zmk_temp_layer_set_config(pointing_settings.aml_idle_ms, positions, pointing_settings.aml_excluded_count);
+        LOG_INF("Restored AML: enabled=%u idle_ms=%d excluded=%u", pointing_settings.aml_enabled, pointing_settings.aml_idle_ms, pointing_settings.aml_excluded_count);
+    } else {
+        LOG_INF("Restored AML enabled state: %u (no excluded positions saved)", pointing_settings.aml_enabled);
+    }
 
     /* Apply CPI if non-default */
     if (pointing_settings.cursor_denominator > 0 &&
@@ -449,9 +466,14 @@ zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
         return POINTING_RESPONSE(set_auto_layer, resp);
     }
 
-    /* Apply enabled state and persist it */
+    /* Apply enabled state and persist everything */
     zmk_temp_layer_set_aml_enabled(set_req->enabled);
     pointing_settings.aml_enabled = set_req->enabled ? 1 : 0;
+    pointing_settings.aml_idle_ms = idle_ms;
+    pointing_settings.aml_excluded_count = (uint8_t)(num_positions > AML_SETTINGS_MAX_EXCLUDED ? AML_SETTINGS_MAX_EXCLUDED : num_positions);
+    for (size_t i = 0; i < pointing_settings.aml_excluded_count; i++) {
+        pointing_settings.aml_excluded_positions[i] = (uint8_t)positions[i];
+    }
     pointing_settings_save();
 
     resp.which_result = zmk_pointing_SetAutoLayerResponse_ok_tag;
