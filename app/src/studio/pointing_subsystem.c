@@ -20,6 +20,8 @@ LOG_MODULE_DECLARE(zmk_studio, CONFIG_ZMK_STUDIO_LOG_LEVEL);
 /* External AML control functions from input_processor_temp_layer.c */
 extern bool zmk_temp_layer_get_aml_enabled(void);
 extern void zmk_temp_layer_set_aml_enabled(bool enabled);
+extern int zmk_temp_layer_set_config(int16_t idle_ms, const uint32_t *positions, size_t num_positions);
+extern int zmk_temp_layer_get_config(int16_t *idle_ms, uint32_t *positions, size_t max_positions, size_t *num_positions);
 
 ZMK_RPC_SUBSYSTEM(pointing)
 
@@ -408,12 +410,6 @@ ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECU
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECURED);
 
 /* ===== AML (Auto Mouse Layer) RPC Handlers ===== */
-
-extern int zmk_temp_layer_get_config(int16_t *require_prior_idle_ms_out,
-                                     uint32_t *excluded_positions_out, size_t max_positions,
-                                     size_t *num_positions_out);
-extern int zmk_temp_layer_set_config(int16_t require_prior_idle_ms,
-                                     const uint32_t *excluded_positions, size_t num_positions);
 
 #define AML_MAX_EXCLUDED_POSITIONS 40
 
