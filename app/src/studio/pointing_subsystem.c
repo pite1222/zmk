@@ -103,27 +103,21 @@ static int pointing_settings_set(const char *name, size_t len,
                                   settings_read_cb read_cb, void *cb_arg) {
     if (strcmp(name, "sensitivity") == 0) {
         if (len != sizeof(pointing_settings)) {
-            /* Handle migration from old formats */
-            if (len == sizeof(pointing_settings) - sizeof(uint32_t)) {
-                /* Migration: missing aml_enabled field */
-                int rc = read_cb(cb_arg, &pointing_settings, len);
-                if (rc >= 0) {
-                    pointing_settings.aml_enabled = 1;
-                    LOG_INF("Migrated pointing settings (added aml_enabled)");
-                }
-                return rc;
+            /* Handle migration: read what we can, zero-fill the rest */
+            size_t read_len = len < sizeof(pointing_settings) ? len : sizeof(pointing_settings);
+            memset(&pointing_settings, 0, sizeof(pointing_settings));
+            /* Set defaults for new fields */
+            pointing_settings.cursor_numerator = 1;
+            pointing_settings.cursor_denominator = 1;
+            pointing_settings.scroll_numerator = 1;
+            pointing_settings.scroll_denominator = 1;
+            pointing_settings.aml_enabled = 1;
+            /* Read old data over the defaults */
+            int rc = read_cb(cb_arg, &pointing_settings, read_len);
+            if (rc >= 0) {
+                LOG_INF("Migrated pointing settings from %zu to %zu bytes", len, sizeof(pointing_settings));
             }
-            if (len == sizeof(pointing_settings) - 2 * sizeof(uint32_t)) {
-                /* Migration: missing both scroll_inverted and aml_enabled */
-                int rc = read_cb(cb_arg, &pointing_settings, len);
-                if (rc >= 0) {
-                    pointing_settings.scroll_inverted = 0;
-                    pointing_settings.aml_enabled = 1;
-                    LOG_INF("Migrated pointing settings (old format)");
-                }
-                return rc;
-            }
-            return -EINVAL;
+            return rc;
         }
         int rc = read_cb(cb_arg, &pointing_settings, sizeof(pointing_settings));
         if (rc >= 0) {
