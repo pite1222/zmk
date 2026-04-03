@@ -464,7 +464,14 @@ zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
     for (size_t i = 0; i < pointing_settings.aml_excluded_count; i++) {
         pointing_settings.aml_excluded_positions[i] = (uint8_t)positions[i];
     }
-    pointing_settings_save();
+    int save_ret = pointing_settings_save();
+    LOG_INF("set_auto_layer: save_ret=%d enabled=%u idle_ms=%d excluded=%u settings_size=%zu",
+            save_ret, pointing_settings.aml_enabled, pointing_settings.aml_idle_ms,
+            pointing_settings.aml_excluded_count, sizeof(pointing_settings));
+
+    if (save_ret < 0) {
+        LOG_ERR("set_auto_layer: pointing_settings_save FAILED: %d", save_ret);
+    }
 
     resp.which_result = zmk_pointing_SetAutoLayerResponse_ok_tag;
     resp.result.ok = true;
