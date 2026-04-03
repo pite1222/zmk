@@ -149,6 +149,16 @@ static int pointing_settings_set(const char *name, size_t len,
         if (rc >= 0) {
             LOG_INF("Loaded AML settings: enabled=%u idle_ms=%d excluded=%u",
                     aml_persist.enabled, aml_persist.idle_ms, aml_persist.excluded_count);
+            /* Apply immediately — settings_load() runs after SYS_INIT */
+            zmk_temp_layer_set_aml_enabled(aml_persist.enabled != 0);
+            if (aml_persist.excluded_count > 0) {
+                uint32_t positions[AML_SETTINGS_MAX_EXCLUDED];
+                for (size_t i = 0; i < aml_persist.excluded_count; i++) {
+                    positions[i] = aml_persist.excluded_positions[i];
+                }
+                zmk_temp_layer_set_config(aml_persist.idle_ms, positions, aml_persist.excluded_count);
+            }
+            LOG_INF("Applied AML from settings: enabled=%u", aml_persist.enabled);
         }
         return rc;
     }
