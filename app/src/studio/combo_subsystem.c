@@ -46,6 +46,7 @@ static bool combos_loaded_from_settings = false;
 /* Forward declaration */
 static int combo_settings_set(const char *name, size_t len,
                                settings_read_cb read_cb, void *cb_arg);
+static int apply_stored_combos(void);
 
 SETTINGS_STATIC_HANDLER_DEFINE(zmk_combo_studio, "combo/studio",
                                 NULL, combo_settings_set, NULL, NULL);
@@ -67,7 +68,9 @@ static int combo_settings_set(const char *name, size_t len,
                 }
             }
             combos_loaded_from_settings = true;
-            LOG_INF("Loaded %d combos from settings", stored_combo_count);
+            LOG_INF("Loaded %d combos from settings — applying immediately", stored_combo_count);
+            /* Apply immediately since settings_load() runs after SYS_INIT */
+            apply_stored_combos();
         }
         return rc;
     }
