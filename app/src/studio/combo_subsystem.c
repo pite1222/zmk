@@ -46,10 +46,20 @@ static bool combos_loaded_from_settings = false;
 /* Forward declaration */
 static int combo_settings_set(const char *name, size_t len,
                                settings_read_cb read_cb, void *cb_arg);
+static int combo_settings_commit(void);
 static int apply_stored_combos(void);
 
 SETTINGS_STATIC_HANDLER_DEFINE(zmk_combo_studio, "combo/studio",
-                                NULL, combo_settings_set, NULL, NULL);
+                                NULL, combo_settings_set, combo_settings_commit, NULL);
+
+/* Called after settings_load() completes — all subsystems are initialized */
+static int combo_settings_commit(void) {
+    if (combos_loaded_from_settings) {
+        LOG_INF("Settings commit: applying %d stored combos", stored_combo_count);
+        apply_stored_combos();
+    }
+    return 0;
+}
 
 static int combo_settings_set(const char *name, size_t len,
                                settings_read_cb read_cb, void *cb_arg) {
@@ -69,8 +79,7 @@ static int combo_settings_set(const char *name, size_t len,
                     }
                 }
                 combos_loaded_from_settings = true;
-                LOG_INF("Migrated %d combos from settings", stored_combo_count);
-                apply_stored_combos();
+                LOG_INF("Migrated %d combos from settings (will apply in late_init)", stored_combo_count);
             }
             return rc;
         }
@@ -83,9 +92,7 @@ static int combo_settings_set(const char *name, size_t len,
                 }
             }
             combos_loaded_from_settings = true;
-            LOG_INF("Loaded %d combos from settings — applying immediately", stored_combo_count);
-            /* Apply immediately since settings_load() runs after SYS_INIT */
-            apply_stored_combos();
+            LOG_INF("Loaded %d combos from settings (will apply in late_init)", stored_combo_count);
         }
         return rc;
     }
@@ -435,10 +442,7 @@ ZMK_RPC_EVENT_MAPPER(combo, event_mapper);
  * settings_load() has been called.
  */
 static int combo_studio_late_init(void) {
-    if (combos_loaded_from_settings) {
-        LOG_INF("Applying %d stored combos from settings", stored_combo_count);
-        apply_stored_combos();
-    }
+    /* Combo application now happens in combo_settings_commit() */
     return 0;
 }
 
