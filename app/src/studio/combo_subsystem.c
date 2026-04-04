@@ -55,9 +55,24 @@ static int combo_settings_set(const char *name, size_t len,
                                settings_read_cb read_cb, void *cb_arg) {
     if (strcmp(name, "combos") == 0) {
         if (len != sizeof(stored_combos)) {
-            LOG_WRN("Combo settings size mismatch: expected %d, got %d",
+            LOG_WRN("Combo settings size mismatch: expected %d, got %d — reading what we can",
                     (int)sizeof(stored_combos), (int)len);
-            return -EINVAL;
+            /* Clear and read what we can for migration */
+            memset(&stored_combos, 0, sizeof(stored_combos));
+            size_t read_len = len < sizeof(stored_combos) ? len : sizeof(stored_combos);
+            int rc = read_cb(cb_arg, &stored_combos, read_len);
+            if (rc >= 0) {
+                stored_combo_count = 0;
+                for (int i = 0; i < MAX_STORED_COMBOS; i++) {
+                    if (stored_combos[i].active) {
+                        stored_combo_count++;
+                    }
+                }
+                combos_loaded_from_settings = true;
+                LOG_INF("Migrated %d combos from settings", stored_combo_count);
+                apply_stored_combos();
+            }
+            return rc;
         }
         int rc = read_cb(cb_arg, &stored_combos, sizeof(stored_combos));
         if (rc >= 0) {
@@ -87,6 +102,12 @@ static int combo_settings_save(void) {
  * Replaces all current combos with the stored ones.
  */
 static int apply_stored_combos(void) {
+    /* Don't replace DT combos if no studio combos are stored */
+    if (stored_combo_count == 0) {
+        LOG_INF("No stored combos — keeping DT defaults");
+        return 0;
+    }
+
     int current_count = zmk_combo_get_count();
 
     /* Remove all existing combos (from last to first) */
