@@ -107,6 +107,7 @@ static struct {
 /* Forward declaration for the settings handler */
 static int pointing_settings_set(const char *name, size_t len,
                                   settings_read_cb read_cb, void *cb_arg);
+static void apply_sensitivity(void);
 
 SETTINGS_STATIC_HANDLER_DEFINE(zmk_pointing_studio, "pointing/studio",
                                 NULL, pointing_settings_set, NULL, NULL);
@@ -128,6 +129,10 @@ static int pointing_settings_set(const char *name, size_t len,
             int rc = read_cb(cb_arg, &pointing_settings, read_len);
             if (rc >= 0) {
                 LOG_INF("Migrated pointing settings from %zu to %zu bytes", len, sizeof(pointing_settings));
+                studio_scroll_numerator = (int32_t)pointing_settings.scroll_numerator;
+                studio_scroll_denominator = (int32_t)pointing_settings.scroll_denominator;
+                studio_scroll_inverted = (pointing_settings.scroll_inverted != 0);
+                apply_sensitivity();
             }
             return rc;
         }
@@ -140,6 +145,12 @@ static int pointing_settings_set(const char *name, size_t len,
                     pointing_settings.scroll_denominator,
                     pointing_settings.cpi,
                     pointing_settings.scroll_inverted);
+            /* Apply immediately — settings_load() runs after SYS_INIT */
+            studio_scroll_numerator = (int32_t)pointing_settings.scroll_numerator;
+            studio_scroll_denominator = (int32_t)pointing_settings.scroll_denominator;
+            studio_scroll_inverted = (pointing_settings.scroll_inverted != 0);
+            apply_sensitivity();
+            LOG_INF("Applied pointing settings from flash: inverted=%d", (int)studio_scroll_inverted);
         }
         return rc;
     }
