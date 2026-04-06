@@ -88,7 +88,7 @@ static struct {
     .cpi = 0,
     .scroll_inverted = 0,
     .aml_enabled = 1,
-    .aml_idle_ms = 0,
+    .aml_idle_ms = 300,
     .aml_excluded_count = 0,
 };
 
@@ -100,7 +100,7 @@ static struct {
     uint8_t excluded_positions[AML_SETTINGS_MAX_EXCLUDED];
 } aml_persist = {
     .enabled = 1,
-    .idle_ms = 0,
+    .idle_ms = 300,
     .excluded_count = 0,
 };
 
