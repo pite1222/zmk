@@ -27,6 +27,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/hid.h>
 #include <zmk/keymap.h>
 
+#if IS_ENABLED(CONFIG_ZMK_POINTING_BLE_KEEPALIVE)
+#include <zmk/pointing/keepalive.h>
+#endif
+
 #define ONE_IF_DEV_OK(n)                                                                           \
     COND_CODE_1(DT_NODE_HAS_STATUS(DT_INST_PHANDLE(n, device), okay), (1 +), (0 +))
 
@@ -326,6 +330,9 @@ static void input_handler(const struct input_listener_config *config,
         }
 
         zmk_endpoint_send_mouse_report();
+#if IS_ENABLED(CONFIG_ZMK_POINTING_BLE_KEEPALIVE)
+        zmk_pointing_keepalive_notify_activity();
+#endif
         zmk_hid_mouse_scroll_set(0, 0);
         zmk_hid_mouse_movement_set(0, 0);
 

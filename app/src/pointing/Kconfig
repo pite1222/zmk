@@ -47,6 +47,29 @@ config ZMK_INPUT_PROCESSOR_TEMP_LAYER_MAX_ACTION_EVENTS
 
 endif
 
+config ZMK_POINTING_BLE_KEEPALIVE
+    bool "BLE Pointing Keepalive"
+    depends on ZMK_BLE
+    help
+      Send periodic zero-motion HID reports while the pointing device is idle
+      to prevent the host OS from widening the BLE connection interval.
+      This eliminates the lag on the first trackball movement after a few
+      seconds of inactivity (most noticeable on macOS).
+
+config ZMK_POINTING_BLE_KEEPALIVE_INTERVAL_MS
+    int "Keepalive interval (ms)"
+    default 2000
+    depends on ZMK_POINTING_BLE_KEEPALIVE
+    help
+      How often to send a zero-motion report while idle.
+
+config ZMK_POINTING_BLE_KEEPALIVE_MAX_IDLE_MS
+    int "Max idle time before stopping keepalive (ms)"
+    default 60000
+    depends on ZMK_POINTING_BLE_KEEPALIVE
+    help
+      Stop sending keepalive reports after this much idle time to save battery.
+
 config ZMK_INPUT_PROCESSOR_TRANSFORM
     bool "Transform Input Processor"
     default y

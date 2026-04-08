@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 target_sources_ifdef(CONFIG_ZMK_INPUT_LISTENER app PRIVATE input_listener.c)
+target_sources_ifdef(CONFIG_ZMK_POINTING_BLE_KEEPALIVE app PRIVATE pointing_keepalive.c)
 target_sources_ifdef(CONFIG_ZMK_INPUT_PROCESSOR_TRANSFORM app PRIVATE input_processor_transform.c)
 target_sources_ifdef(CONFIG_ZMK_INPUT_PROCESSOR_SCALER app PRIVATE input_processor_scaler.c)
 target_sources_ifdef(CONFIG_ZMK_INPUT_PROCESSOR_STUDIO_SCALER app PRIVATE input_processor_studio_scaler.c)
