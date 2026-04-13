@@ -24,6 +24,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 struct temp_layer_config {
     int16_t require_prior_idle_ms;
+    uint16_t require_prior_motion;
     const uint16_t *excluded_positions;
     size_t num_positions;
 };
@@ -32,12 +33,15 @@ struct temp_layer_state {
     uint8_t toggle_layer;
     bool is_active;
     int64_t last_tapped_timestamp;
+    uint16_t motion_accumulator;
+    int64_t last_motion_timestamp;
 };
 
 /* Runtime-configurable AML settings (overrides DTS config when set) */
 struct temp_layer_runtime_config {
     bool has_runtime_config;
     int16_t require_prior_idle_ms;
+    uint16_t require_prior_motion;
     uint16_t excluded_positions[TEMP_LAYER_MAX_EXCLUDED_POSITIONS];
     size_t num_positions;
 };
@@ -322,6 +326,32 @@ static int temp_layer_handle_event(const struct device *dev, struct input_event 
 
     if (!data->state.is_active &&
         !should_quick_tap(cfg, &data->runtime, data->state.last_tapped_timestamp, k_uptime_get())) {
+
+        /* Motion threshold: accumulate motion and only activate when threshold is met */
+        uint16_t motion_threshold = data->runtime.has_runtime_config
+            ? data->runtime.require_prior_motion
+            : cfg->require_prior_motion;
+
+        if (motion_threshold > 0) {
+            int64_t now = k_uptime_get();
+            /* Reset accumulator if no motion for 200ms (new gesture) */
+            if ((now - data->state.last_motion_timestamp) > 200) {
+                data->state.motion_accumulator = 0;
+            }
+            data->state.last_motion_timestamp = now;
+
+            uint16_t abs_val = (event->value < 0) ? -event->value : event->value;
+            uint16_t new_acc = data->state.motion_accumulator + abs_val;
+            /* Clamp to avoid overflow */
+            data->state.motion_accumulator = (new_acc > UINT16_MAX / 2) ? UINT16_MAX / 2 : new_acc;
+
+            if (data->state.motion_accumulator < motion_threshold) {
+                /* Not enough motion yet, skip activation */
+                k_mutex_unlock(&data->lock);
+                return ZMK_INPUT_PROC_CONTINUE;
+            }
+        }
+
         struct layer_state_action action = {.layer = param1, .activate = true};
 
         int ret = k_msgq_put(&temp_layer_action_msgq, &action, K_MSEC(10));
@@ -450,6 +480,7 @@ ZMK_SUBSCRIPTION(processor_temp_layer, zmk_keycode_state_changed);
     static const uint16_t excluded_positions_##n[] = DT_INST_PROP(n, excluded_positions);          \
     static const struct temp_layer_config processor_temp_layer_config_##n = {                      \
         .require_prior_idle_ms = DT_INST_PROP_OR(n, require_prior_idle_ms, 0),                     \
+        .require_prior_motion = DT_INST_PROP_OR(n, require_prior_motion, 0),                       \
         .excluded_positions = excluded_positions_##n,                                              \
         .num_positions = DT_INST_PROP_LEN(n, excluded_positions),                                  \
     };                                                                                             \

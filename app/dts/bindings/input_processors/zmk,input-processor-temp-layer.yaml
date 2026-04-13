@@ -14,6 +14,12 @@ properties:
     default: 0
     description: Time in milliseconds that must pass after the last keystroke before the layer can be toggled
 
+  require-prior-motion:
+    type: int
+    required: false
+    default: 0
+    description: Minimum accumulated motion (sum of absolute deltas) before the layer activates. Filters out small vibrations from typing.
+
   excluded-positions:
     type: array
     required: false
