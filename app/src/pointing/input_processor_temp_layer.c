@@ -334,8 +334,8 @@ static int temp_layer_handle_event(const struct device *dev, struct input_event 
 
         if (motion_threshold > 0) {
             int64_t now = k_uptime_get();
-            /* Reset accumulator if no motion for 200ms (new gesture) */
-            if ((now - data->state.last_motion_timestamp) > 200) {
+            /* Reset accumulator if no motion for 100ms (new gesture) */
+            if ((now - data->state.last_motion_timestamp) > 100) {
                 data->state.motion_accumulator = 0;
             }
             data->state.last_motion_timestamp = now;
