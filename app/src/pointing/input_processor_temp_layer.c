@@ -15,6 +15,7 @@
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/keycode_state_changed.h>
 #include <zmk/events/layer_state_changed.h>
+#include <dt-bindings/zmk/hid_usage_pages.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -246,9 +247,20 @@ static int handle_position_state_changed(const struct device *dev, const zmk_eve
     return ZMK_EV_EVENT_BUBBLE;
 }
 
+static bool is_modifier_key(const struct zmk_keycode_state_changed *ev) {
+    /* HID keyboard modifier keys: 0xE0 (LCtrl) through 0xE7 (RGui) */
+    return ev->usage_page == HID_USAGE_KEY && ev->keycode >= 0xE0 && ev->keycode <= 0xE7;
+}
+
 static int handle_keycode_state_changed(const struct device *dev, const zmk_event_t *eh) {
     const struct zmk_keycode_state_changed *ev = as_zmk_keycode_state_changed(eh);
     if (!ev->state) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+    /* Modifier keys (Shift, Ctrl, Alt, Gui) should NOT block AML activation.
+     * Users commonly hold modifiers while using the trackball (e.g. Shift+drag). */
+    if (is_modifier_key(ev)) {
         return ZMK_EV_EVENT_BUBBLE;
     }
 
