@@ -399,8 +399,16 @@ int zmk_temp_layer_set_config(int16_t require_prior_idle_ms,
         return ret;
     }
 
+    const struct temp_layer_config *cfg = dev->config;
+
     data->runtime.has_runtime_config = true;
     data->runtime.require_prior_idle_ms = require_prior_idle_ms;
+
+    /* Preserve DTS motion threshold when switching to runtime config,
+     * since the Studio RPC doesn't include this field yet. */
+    if (data->runtime.require_prior_motion == 0) {
+        data->runtime.require_prior_motion = cfg->require_prior_motion;
+    }
 
     size_t count = MIN(num_positions, TEMP_LAYER_MAX_EXCLUDED_POSITIONS);
     data->runtime.num_positions = count;
@@ -408,8 +416,8 @@ int zmk_temp_layer_set_config(int16_t require_prior_idle_ms,
         data->runtime.excluded_positions[i] = (uint16_t)excluded_positions[i];
     }
 
-    LOG_INF("AML runtime config updated: idle_ms=%d, excluded_count=%zu",
-            require_prior_idle_ms, count);
+    LOG_INF("AML runtime config updated: idle_ms=%d, motion_threshold=%d, excluded_count=%zu",
+            require_prior_idle_ms, data->runtime.require_prior_motion, count);
 
     k_mutex_unlock(&data->lock);
     return 0;
