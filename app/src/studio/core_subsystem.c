@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdio.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
@@ -58,7 +59,28 @@ static bool encode_device_info_firmware_version(pb_ostream_t *stream, const pb_f
         return false;
     }
 
-    return pb_encode_string(stream, ver, strlen(ver));
+    /* Append build date/time to version string so users can identify
+     * exactly which firmware build is running. Format: "<ver> (YYYY-MM-DD HH:MM)" */
+    static char ver_with_build[64];
+    /* Parse __DATE__ ("Mon DD YYYY") to ISO format */
+    const char *d = __DATE__;
+    const char *t = __TIME__;
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    int mon_idx = 0;
+    for (int i = 0; i < 12; i++) {
+        if (d[0] == months[i*3] && d[1] == months[i*3+1] && d[2] == months[i*3+2]) {
+            mon_idx = i + 1;
+            break;
+        }
+    }
+    snprintf(ver_with_build, sizeof(ver_with_build), "%s (%c%c%c%c-%02d-%c%c %c%c:%c%c)",
+             ver,
+             d[7], d[8], d[9], d[10],           /* year */
+             mon_idx,                            /* month */
+             d[4] == ' ' ? '0' : d[4], d[5],    /* day */
+             t[0], t[1], t[3], t[4]);           /* HH:MM */
+
+    return pb_encode_string(stream, ver_with_build, strlen(ver_with_build));
 }
 
 zmk_studio_Response get_device_info(const zmk_studio_Request *req) {
