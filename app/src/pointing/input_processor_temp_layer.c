@@ -76,6 +76,14 @@ void zmk_temp_layer_set_aml_enabled(bool enabled) {
         const struct device *dev = DEVICE_DT_INST_GET(0);
         struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
 
+        /* Snapshot the layer to deactivate while holding the mutex,
+         * but release the mutex BEFORE calling zmk_keymap_layer_deactivate().
+         * That function fires a synchronous layer_state_changed event which
+         * re-enters this processor's handlers — holding the mutex would risk
+         * deadlock or subtle recursion. */
+        uint8_t layer_to_deactivate = 0;
+        bool was_active = false;
+
         int ret = k_mutex_lock(&data->lock, K_FOREVER);
         if (ret < 0) {
             return;
@@ -83,12 +91,17 @@ void zmk_temp_layer_set_aml_enabled(bool enabled) {
 
         if (data->state.is_active) {
             data->state.is_active = false;
-            zmk_keymap_layer_deactivate(data->state.toggle_layer, false);
+            was_active = true;
+            layer_to_deactivate = data->state.toggle_layer;
             k_work_cancel_delayable(&layer_disable_works[data->state.toggle_layer]);
-            LOG_INF("AML disabled: deactivated layer %d", data->state.toggle_layer);
         }
 
         k_mutex_unlock(&data->lock);
+
+        if (was_active) {
+            zmk_keymap_layer_deactivate(layer_to_deactivate, false);
+            LOG_INF("AML disabled: deactivated layer %d", layer_to_deactivate);
+        }
     }
 
     LOG_INF("AML %s", enabled ? "enabled" : "disabled");
@@ -171,7 +184,12 @@ static void layer_action_work_cb(struct k_work *work) {
 
     struct layer_state_action action;
 
-    while (k_msgq_get(&temp_layer_action_msgq, &action, K_MSEC(10)) >= 0) {
+    /* Drain the msgq without blocking — holding the mutex while blocking
+     * stalls input event handlers. */
+    while (k_msgq_get(&temp_layer_action_msgq, &action, K_NO_WAIT) >= 0) {
+        /* Ensure the state's toggle_layer matches the action we're applying.
+         * This makes activate/deactivate consistent for the specific layer ID. */
+        data->state.toggle_layer = action.layer;
         if (!action.activate) {
             if (zmk_keymap_layer_active(action.layer)) {
                 update_layer_state(&data->state, false);
@@ -204,7 +222,8 @@ static int handle_layer_state_changed(const struct device *dev, const zmk_event_
     if (ret < 0) {
         return ret;
     }
-    if (!zmk_keymap_layer_active(zmk_keymap_layer_index_to_id(data->state.toggle_layer))) {
+    /* toggle_layer is a layer ID (from the DT param1), not an index. */
+    if (!zmk_keymap_layer_active(data->state.toggle_layer)) {
         LOG_DBG("Deactivating layer that was activated by this processor");
         data->state.is_active = false;
         k_work_cancel_delayable(&layer_disable_works[data->state.toggle_layer]);
@@ -352,10 +371,14 @@ static int temp_layer_handle_event(const struct device *dev, struct input_event 
             }
             data->state.last_motion_timestamp = now;
 
-            uint16_t abs_val = (event->value < 0) ? -event->value : event->value;
-            uint16_t new_acc = data->state.motion_accumulator + abs_val;
-            /* Clamp to avoid overflow */
-            data->state.motion_accumulator = (new_acc > UINT16_MAX / 2) ? UINT16_MAX / 2 : new_acc;
+            /* Compute absolute motion delta with full int32 range before clamping to uint16. */
+            int32_t signed_val = event->value;
+            uint32_t abs_val = (signed_val < 0) ? (uint32_t)(-(int64_t)signed_val) : (uint32_t)signed_val;
+            if (abs_val > UINT16_MAX) abs_val = UINT16_MAX;
+            /* Use uint32 intermediate to avoid wrap-around before clamp. */
+            uint32_t new_acc = (uint32_t)data->state.motion_accumulator + abs_val;
+            if (new_acc > UINT16_MAX) new_acc = UINT16_MAX;
+            data->state.motion_accumulator = (uint16_t)new_acc;
 
             if (data->state.motion_accumulator < motion_threshold) {
                 /* Not enough motion yet, skip activation */
