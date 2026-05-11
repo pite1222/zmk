@@ -314,10 +314,17 @@ zmk_studio_Response get_sensitivity(const zmk_studio_Request *req) {
     zmk_pointing_GetSensitivityResponse resp =
         zmk_pointing_GetSensitivityResponse_init_zero;
 
+    /* has_cursor / has_scroll must be set for nanopb to serialize these
+     * submessages onto the wire. Same nanopb pitfall as the combo binding
+     * fix — without these, clients receive an empty cursor/scroll and
+     * the (?? 1) fallback in the client makes sensitivity look like 1/1
+     * even when the keyboard has it configured differently. */
+    resp.has_cursor = true;
     resp.cursor.numerator = pointing_settings.cursor_numerator;
     resp.cursor.denominator = pointing_settings.cursor_denominator;
 
     /* Return scroll settings - use sign to encode inversion */
+    resp.has_scroll = true;
     resp.scroll.numerator = pointing_settings.scroll_numerator;
     resp.scroll.denominator = pointing_settings.scroll_denominator;
 
