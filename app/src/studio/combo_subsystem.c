@@ -224,6 +224,11 @@ zmk_studio_Response get_combos(const zmk_studio_Request *req) {
         }
 
         /* Set binding */
+        /* has_binding must be set for nanopb to serialize the submessage.
+         * Without it, clients (iOS app, ZMK Studio web) receive an empty
+         * binding field even though the keyboard has it configured.
+         * Reported by an iOS ZMK Studio client author on Discord 2026-05-11. */
+        combo_msg->has_binding = true;
         combo_msg->binding.behavior_id = zmk_behavior_get_local_id(cfg.behavior_dev);
         combo_msg->binding.param1 = cfg.param1;
         combo_msg->binding.param2 = cfg.param2;
