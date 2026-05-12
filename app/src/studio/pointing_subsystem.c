@@ -182,6 +182,19 @@ static int pointing_settings_save(void) {
                               &pointing_settings, sizeof(pointing_settings));
 }
 
+/* Public API: toggle scroll invert (natural scrolling) via a keymap behavior.
+ * Mirrors the persistence path of set_sensitivity so the value survives reboot
+ * and the next get_sensitivity over Studio RPC reflects the change. */
+void zmk_pointing_toggle_scroll_invert(void) {
+    pointing_settings.scroll_inverted = pointing_settings.scroll_inverted ? 0 : 1;
+    studio_scroll_inverted = (pointing_settings.scroll_inverted != 0);
+    int rc = pointing_settings_save();
+    if (rc < 0) {
+        LOG_WRN("Failed to persist scroll_inverted toggle: %d", rc);
+    }
+    LOG_INF("Toggled scroll invert: %d", (int)studio_scroll_inverted);
+}
+
 static int aml_settings_save(void) {
     return settings_save_one("pointing/studio/aml",
                               &aml_persist, sizeof(aml_persist));
