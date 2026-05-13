@@ -53,6 +53,10 @@ enum advertising_type {
     ZMK_ADV_CONN,
 } advertising_status;
 
+// When directed advertising fails (peer not reachable), fall back to open advertising.
+// Reset on successful connection or profile switch so the next power-on retries directed first.
+static bool directed_adv_failed = false;
+
 #define CURR_ADV(adv) (adv << 4)
 
 #define ZMK_ADV_CONN_NAME                                                                          \
@@ -190,14 +194,15 @@ int update_advertising(void) {
     if (zmk_ble_active_profile_is_open()) {
         desired_adv = ZMK_ADV_CONN;
     } else if (!zmk_ble_active_profile_is_connected()) {
-        desired_adv = ZMK_ADV_CONN;
-        // Need to fix directed advertising for privacy centrals. See
-        // https://github.com/zephyrproject-rtos/zephyr/pull/14984 char
-        // addr_str[BT_ADDR_LE_STR_LEN]; bt_addr_le_to_str(zmk_ble_active_profile_addr(), addr_str,
-        // sizeof(addr_str));
-
-        // LOG_DBG("Directed advertising to %s", addr_str);
-        // desired_adv = ZMK_ADV_DIR;
+        // Use directed advertising to reconnect quickly to the last paired device.
+        // If the peer is unreachable (e.g. out of range or powered off), directed advertising
+        // will time out and connected() will set directed_adv_failed, falling back to open
+        // advertising so other devices can still connect.
+        if (!directed_adv_failed && !zmk_ble_active_profile_is_open()) {
+            desired_adv = ZMK_ADV_DIR;
+        } else {
+            desired_adv = ZMK_ADV_CONN;
+        }
     }
     LOG_DBG("advertising from %d to %d", advertising_status, desired_adv);
 
@@ -303,6 +308,9 @@ int zmk_ble_prof_select(uint8_t index) {
 
     active_profile = index;
     ble_save_profile();
+
+    // Reset fallback flag so directed advertising is retried for the new profile.
+    directed_adv_failed = false;
 
     update_advertising();
 
@@ -524,13 +532,21 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     }
 
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    bool was_directed = (advertising_status == ZMK_ADV_DIR);
     advertising_status = ZMK_ADV_NONE;
 
     if (err) {
         LOG_WRN("Failed to connect to %s (%u)", addr, err);
+        if (was_directed) {
+            // Directed advertising timed out — peer is unreachable. Fall back to open
+            // advertising so any paired device can connect.
+            directed_adv_failed = true;
+            LOG_DBG("Directed advertising timed out, falling back to open advertising");
+        }
         update_advertising();
         return;
     }
+    directed_adv_failed = false;
 
     LOG_DBG("Connected %s", addr);
 
