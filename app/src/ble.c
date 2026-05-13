@@ -57,6 +57,20 @@ enum advertising_type {
 // Reset on successful connection or profile switch so the next power-on retries directed first.
 static bool directed_adv_failed = false;
 
+// Low Duty directed advertising has no built-in timeout in Zephyr (continues forever).
+// Use a delayed work to manually time out and fall back to open advertising so a connection
+// is still possible when the last paired host is offline/asleep.
+#define DIR_ADV_TIMEOUT_MS 3000
+static struct k_work_delayable dir_adv_timeout_work;
+
+static void dir_adv_timeout_handler(struct k_work *work) {
+    if (advertising_status == ZMK_ADV_DIR) {
+        LOG_DBG("Directed advertising timed out, falling back to open advertising");
+        directed_adv_failed = true;
+        update_advertising();
+    }
+}
+
 #define CURR_ADV(adv) (adv << 4)
 
 #define ZMK_ADV_CONN_NAME                                                                          \
@@ -226,6 +240,15 @@ int update_advertising(void) {
     case ZMK_ADV_CONN + CURR_ADV(ZMK_ADV_NONE):
         CHECKED_OPEN_ADV();
         break;
+    }
+
+    // Manage the directed-advertising timeout: arm it when we just started directed
+    // advertising, cancel it for any other state. Use reschedule so re-entering DIR
+    // (e.g. profile switch back to DIR) restarts the clock.
+    if (advertising_status == ZMK_ADV_DIR) {
+        k_work_reschedule(&dir_adv_timeout_work, K_MSEC(DIR_ADV_TIMEOUT_MS));
+    } else {
+        k_work_cancel_delayable(&dir_adv_timeout_work);
     }
 
     return 0;
@@ -766,6 +789,8 @@ static int zmk_ble_init(void) {
         LOG_ERR("BLUETOOTH FAILED (%d)", err);
         return err;
     }
+
+    k_work_init_delayable(&dir_adv_timeout_work, dir_adv_timeout_handler);
 
 #if IS_ENABLED(CONFIG_SETTINGS)
     settings_register(&profiles_handler);
