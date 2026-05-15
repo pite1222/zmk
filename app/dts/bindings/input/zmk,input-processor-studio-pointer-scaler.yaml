@@ -22,6 +22,8 @@ properties:
   codes:
     type: array
     required: true
+  track-remainders:
+    type: boolean
 
 input-processor-cells:
   []
