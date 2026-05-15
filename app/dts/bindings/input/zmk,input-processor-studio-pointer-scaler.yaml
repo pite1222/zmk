@@ -1,0 +1,27 @@
+# Copyright (c) 2025 The Conductor Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Dynamic pointer scaler input processor for ZMK Studio precision mode.
+  Reads scaling parameters from runtime variables set by the
+  pointing subsystem RPC handler, enabling real-time precision-mode
+  sensitivity adjustment from Conductor Studio.
+
+compatible: "zmk,input-processor-studio-pointer-scaler"
+
+include: base.yaml
+
+properties:
+  "#input-processor-cells":
+    type: int
+    required: true
+    const: 0
+  type:
+    type: int
+    default: 0x02  # INPUT_EV_REL
+  codes:
+    type: array
+    required: true
+
+input-processor-cells:
+  []

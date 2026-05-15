@@ -10,3 +10,4 @@
 #include <input/processors/temp_layer.dtsi>
 #include <input/processors/behaviors.dtsi>
 #include <input/processors/studio_scaler.dtsi>
+#include <input/processors/studio_pointer_scaler.dtsi>

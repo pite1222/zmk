@@ -62,6 +62,13 @@ volatile int32_t studio_scroll_denominator = 1;
 volatile bool studio_scroll_inverted = false;
 
 /*
+ * Global variables for the studio_pointer_scaler input processor.
+ * Active only on the precision layer override; default 1/1 = no scaling.
+ */
+volatile int32_t studio_pointer_numerator = 1;
+volatile int32_t studio_pointer_denominator = 1;
+
+/*
  * Persistent sensitivity settings.
  * numerator/denominator form a rational multiplier.
  * Default is 1/1 (no scaling change), CPI = 0 means "use default".
@@ -80,6 +87,8 @@ static struct {
     int16_t aml_idle_ms;
     uint8_t aml_excluded_count;
     uint8_t aml_excluded_positions[AML_SETTINGS_MAX_EXCLUDED];
+    uint32_t precision_numerator;
+    uint32_t precision_denominator;
 } pointing_settings = {
     .cursor_numerator = 1,
     .cursor_denominator = 1,
@@ -90,6 +99,8 @@ static struct {
     .aml_enabled = 1,
     .aml_idle_ms = 300,
     .aml_excluded_count = 0,
+    .precision_numerator = 1,
+    .precision_denominator = 4,
 };
 
 /* AML-specific persistent storage */
@@ -257,6 +268,10 @@ static void apply_sensitivity(void) {
     studio_scroll_denominator = (int32_t)pointing_settings.scroll_denominator;
     studio_scroll_inverted = (pointing_settings.scroll_inverted != 0);
 
+    /* Update precision globals for the studio_pointer_scaler input processor */
+    studio_pointer_numerator = (int32_t)pointing_settings.precision_numerator;
+    studio_pointer_denominator = (int32_t)pointing_settings.precision_denominator;
+
     LOG_INF("Scroll scaler updated: %d/%d inverted=%d",
             (int)studio_scroll_numerator,
             (int)studio_scroll_denominator,
@@ -294,6 +309,14 @@ static int pointing_studio_init(void) {
     studio_scroll_numerator = (int32_t)pointing_settings.scroll_numerator;
     studio_scroll_denominator = (int32_t)pointing_settings.scroll_denominator;
     studio_scroll_inverted = (pointing_settings.scroll_inverted != 0);
+
+    /* Apply precision scale globals (default 1/4 if storage empty) */
+    if (pointing_settings.precision_denominator == 0) {
+        pointing_settings.precision_numerator = 1;
+        pointing_settings.precision_denominator = 4;
+    }
+    studio_pointer_numerator = (int32_t)pointing_settings.precision_numerator;
+    studio_pointer_denominator = (int32_t)pointing_settings.precision_denominator;
 
     /* Restore AML from dedicated aml_persist storage */
     zmk_temp_layer_set_aml_enabled(aml_persist.enabled != 0);
@@ -468,6 +491,67 @@ ZMK_RPC_SUBSYSTEM_SETTINGS_RESET(pointing, pointing_settings_reset);
 
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECURED);
 ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_sensitivity, ZMK_STUDIO_RPC_HANDLER_SECURED);
+
+/* ===== Precision Scale RPC Handlers ===== */
+
+zmk_studio_Response get_precision_scale(const zmk_studio_Request *req) {
+    zmk_pointing_GetPrecisionScaleResponse resp =
+        zmk_pointing_GetPrecisionScaleResponse_init_zero;
+
+    resp.has_precision = true;
+    resp.precision.numerator = pointing_settings.precision_numerator;
+    resp.precision.denominator = pointing_settings.precision_denominator;
+    if (resp.precision.denominator == 0) {
+        resp.precision.numerator = 1;
+        resp.precision.denominator = 4;
+    }
+
+    LOG_INF("get_precision_scale: %u/%u",
+            resp.precision.numerator, resp.precision.denominator);
+    return POINTING_RESPONSE(get_precision_scale, resp);
+}
+
+zmk_studio_Response set_precision_scale(const zmk_studio_Request *req) {
+    const zmk_pointing_SetPrecisionScaleRequest *set_req =
+        &req->subsystem.pointing.request_type.set_precision_scale;
+
+    LOG_INF("set_precision_scale: %u/%u",
+            set_req->precision.numerator, set_req->precision.denominator);
+
+    if (set_req->precision.denominator == 0 || set_req->precision.numerator == 0) {
+        zmk_pointing_SetPrecisionScaleResponse resp =
+            zmk_pointing_SetPrecisionScaleResponse_init_zero;
+        resp.which_result = zmk_pointing_SetPrecisionScaleResponse_err_tag;
+        resp.result.err = zmk_pointing_SetPrecisionScaleErrorCode_SET_PRECISION_SCALE_ERR_INVALID;
+        return POINTING_RESPONSE(set_precision_scale, resp);
+    }
+
+    pointing_settings.precision_numerator = set_req->precision.numerator;
+    pointing_settings.precision_denominator = set_req->precision.denominator;
+
+    /* Update runtime globals so the change takes effect immediately. */
+    studio_pointer_numerator = (int32_t)pointing_settings.precision_numerator;
+    studio_pointer_denominator = (int32_t)pointing_settings.precision_denominator;
+
+    int ret = pointing_settings_save();
+    if (ret < 0) {
+        LOG_WRN("Failed to save precision scale: %d", ret);
+        zmk_pointing_SetPrecisionScaleResponse resp =
+            zmk_pointing_SetPrecisionScaleResponse_init_zero;
+        resp.which_result = zmk_pointing_SetPrecisionScaleResponse_err_tag;
+        resp.result.err = zmk_pointing_SetPrecisionScaleErrorCode_SET_PRECISION_SCALE_ERR_STORAGE;
+        return POINTING_RESPONSE(set_precision_scale, resp);
+    }
+
+    zmk_pointing_SetPrecisionScaleResponse resp =
+        zmk_pointing_SetPrecisionScaleResponse_init_zero;
+    resp.which_result = zmk_pointing_SetPrecisionScaleResponse_ok_tag;
+    resp.result.ok = true;
+    return POINTING_RESPONSE(set_precision_scale, resp);
+}
+
+ZMK_RPC_SUBSYSTEM_HANDLER(pointing, get_precision_scale, ZMK_STUDIO_RPC_HANDLER_SECURED);
+ZMK_RPC_SUBSYSTEM_HANDLER(pointing, set_precision_scale, ZMK_STUDIO_RPC_HANDLER_SECURED);
 
 /* ===== AML (Auto Mouse Layer) RPC Handlers ===== */
 
