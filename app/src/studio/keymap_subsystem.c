@@ -18,6 +18,10 @@ LOG_MODULE_DECLARE(zmk_studio, CONFIG_ZMK_STUDIO_LOG_LEVEL);
 
 #include <pb_encode.h>
 
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS)
+#include <zmk_rgbled_widget/widget.h>
+#endif
+
 ZMK_RPC_SUBSYSTEM(keymap)
 
 #define KEYMAP_RESPONSE(type, ...) ZMK_RPC_RESPONSE(keymap, type, __VA_ARGS__)
@@ -87,6 +91,10 @@ static bool encode_keymap_layers(pb_ostream_t *stream, const pb_field_t *field, 
 
         layer.bindings.funcs.encode = encode_layer_bindings;
         layer.bindings.arg = &layer_id;
+
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS)
+        layer.color = (uint32_t)zmk_rgbled_widget_get_layer_color(l) + 1;
+#endif
 
         if (!pb_encode_submessage(stream, &zmk_keymap_Layer_msg, &layer)) {
             LOG_WRN("Failed to encode layer submessage");
@@ -498,6 +506,14 @@ zmk_studio_Response set_layer_props(const zmk_studio_Request *req) {
 
     zmk_keymap_SetLayerPropsResponse resp =
         zmk_keymap_SetLayerPropsResponse_SET_LAYER_PROPS_RESP_OK;
+
+#if IS_ENABLED(CONFIG_RGBLED_WIDGET_SHOW_LAYER_COLORS)
+    if (set_req->color > 0) {
+        zmk_rgbled_widget_set_layer_color((uint8_t)set_req->layer_id, (uint8_t)(set_req->color - 1));
+        raise_zmk_studio_rpc_notification((struct zmk_studio_rpc_notification){
+            .notification = KEYMAP_NOTIFICATION(unsaved_changes_status_changed, true)});
+    }
+#endif
 
     if (strlen(set_req->name) <= 0) {
         return KEYMAP_RESPONSE(set_layer_props, resp);
