@@ -22,6 +22,8 @@ extern bool zmk_temp_layer_get_aml_enabled(void);
 extern void zmk_temp_layer_set_aml_enabled(bool enabled);
 extern int zmk_temp_layer_set_config(int16_t idle_ms, const uint32_t *positions, size_t num_positions);
 extern int zmk_temp_layer_get_config(int16_t *idle_ms, uint32_t *positions, size_t max_positions, size_t *num_positions);
+extern uint16_t zmk_temp_layer_get_motion_threshold(void);
+extern void zmk_temp_layer_set_motion_threshold(uint16_t threshold);
 
 ZMK_RPC_SUBSYSTEM(pointing)
 
@@ -109,10 +111,12 @@ static struct {
     int16_t idle_ms;
     uint8_t excluded_count;
     uint8_t excluded_positions[AML_SETTINGS_MAX_EXCLUDED];
+    uint16_t motion_threshold;
 } aml_persist = {
     .enabled = 1,
     .idle_ms = 300,
     .excluded_count = 0,
+    .motion_threshold = 0,
 };
 
 /* Forward declaration for the settings handler */
@@ -169,8 +173,9 @@ static int pointing_settings_set(const char *name, size_t len,
         if (len > sizeof(aml_persist)) len = sizeof(aml_persist);
         int rc = read_cb(cb_arg, &aml_persist, len);
         if (rc >= 0) {
-            LOG_INF("Loaded AML settings: enabled=%u idle_ms=%d excluded=%u",
-                    aml_persist.enabled, aml_persist.idle_ms, aml_persist.excluded_count);
+            LOG_INF("Loaded AML settings: enabled=%u idle_ms=%d excluded=%u motion=%u",
+                    aml_persist.enabled, aml_persist.idle_ms, aml_persist.excluded_count,
+                    aml_persist.motion_threshold);
             /* Apply immediately — settings_load() runs after SYS_INIT */
             zmk_temp_layer_set_aml_enabled(aml_persist.enabled != 0);
             if (aml_persist.excluded_count > 0) {
@@ -179,6 +184,9 @@ static int pointing_settings_set(const char *name, size_t len,
                     positions[i] = aml_persist.excluded_positions[i];
                 }
                 zmk_temp_layer_set_config(aml_persist.idle_ms, positions, aml_persist.excluded_count);
+            }
+            if (aml_persist.motion_threshold > 0) {
+                zmk_temp_layer_set_motion_threshold(aml_persist.motion_threshold);
             }
             LOG_INF("Applied AML from settings: enabled=%u", aml_persist.enabled);
         }
@@ -327,8 +335,12 @@ static int pointing_studio_init(void) {
         }
         zmk_temp_layer_set_config(aml_persist.idle_ms, positions, aml_persist.excluded_count);
     }
-    LOG_INF("Restored AML: enabled=%u idle_ms=%d excluded=%u",
-            aml_persist.enabled, aml_persist.idle_ms, aml_persist.excluded_count);
+    if (aml_persist.motion_threshold > 0) {
+        zmk_temp_layer_set_motion_threshold(aml_persist.motion_threshold);
+    }
+    LOG_INF("Restored AML: enabled=%u idle_ms=%d excluded=%u motion=%u",
+            aml_persist.enabled, aml_persist.idle_ms, aml_persist.excluded_count,
+            aml_persist.motion_threshold);
 
     /* Apply CPI if non-default */
     if (pointing_settings.cursor_denominator > 0 &&
@@ -484,6 +496,13 @@ static int pointing_settings_reset(void) {
     apply_sensitivity();
     zmk_temp_layer_set_aml_enabled(true);
 
+    /* Reset AML persist to defaults */
+    aml_persist.enabled = 1;
+    aml_persist.idle_ms = 300;
+    aml_persist.excluded_count = 0;
+    aml_persist.motion_threshold = 0;
+    aml_settings_save();
+
     return pointing_settings_save();
 }
 
@@ -575,7 +594,10 @@ zmk_studio_Response get_auto_layer(const zmk_studio_Request *req) {
         }
     }
 
-    LOG_INF("get_auto_layer: idle_ms=%d excluded_count=%zu", idle_ms, num_positions);
+    resp.motion_threshold = zmk_temp_layer_get_motion_threshold();
+
+    LOG_INF("get_auto_layer: idle_ms=%d excluded_count=%zu motion=%u",
+            idle_ms, num_positions, resp.motion_threshold);
     return POINTING_RESPONSE(get_auto_layer, resp);
 }
 
@@ -594,8 +616,8 @@ zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
         num_positions++;
     }
 
-    LOG_INF("set_auto_layer: enabled=%d idle_ms=%d excluded_count=%zu",
-            (int)set_req->enabled, idle_ms, num_positions);
+    LOG_INF("set_auto_layer: enabled=%d idle_ms=%d excluded_count=%zu motion=%u",
+            (int)set_req->enabled, idle_ms, num_positions, set_req->motion_threshold);
 
     /* Apply excluded positions config */
     int ret = zmk_temp_layer_set_config(idle_ms, positions, num_positions);
@@ -606,6 +628,11 @@ zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
         return POINTING_RESPONSE(set_auto_layer, resp);
     }
 
+    /* Apply motion threshold */
+    if (set_req->motion_threshold > 0) {
+        zmk_temp_layer_set_motion_threshold((uint16_t)set_req->motion_threshold);
+    }
+
     /* Apply enabled state and persist to dedicated AML storage */
     zmk_temp_layer_set_aml_enabled(set_req->enabled);
     aml_persist.enabled = set_req->enabled ? 1 : 0;
@@ -614,10 +641,11 @@ zmk_studio_Response set_auto_layer(const zmk_studio_Request *req) {
     for (size_t i = 0; i < aml_persist.excluded_count; i++) {
         aml_persist.excluded_positions[i] = (uint8_t)positions[i];
     }
+    aml_persist.motion_threshold = (uint16_t)set_req->motion_threshold;
     int save_ret = aml_settings_save();
-    LOG_INF("set_auto_layer: aml_save_ret=%d enabled=%u idle_ms=%d excluded=%u size=%zu",
+    LOG_INF("set_auto_layer: aml_save_ret=%d enabled=%u idle_ms=%d excluded=%u motion=%u size=%zu",
             save_ret, aml_persist.enabled, aml_persist.idle_ms,
-            aml_persist.excluded_count, sizeof(aml_persist));
+            aml_persist.excluded_count, aml_persist.motion_threshold, sizeof(aml_persist));
     if (save_ret < 0) {
         LOG_ERR("set_auto_layer: aml_settings_save FAILED: %d", save_ret);
     }

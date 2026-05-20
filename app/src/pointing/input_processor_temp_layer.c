@@ -446,6 +446,52 @@ int zmk_temp_layer_set_config(int16_t require_prior_idle_ms,
     return 0;
 }
 
+/* Public API: Get current effective motion threshold */
+uint16_t zmk_temp_layer_get_motion_threshold(void) {
+    const struct device *dev = DEVICE_DT_INST_GET(0);
+    if (!dev) {
+        return 0;
+    }
+
+    struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
+    const struct temp_layer_config *cfg = dev->config;
+
+    if (data->runtime.has_runtime_config) {
+        return data->runtime.require_prior_motion;
+    }
+    return cfg->require_prior_motion;
+}
+
+/* Public API: Set runtime motion threshold */
+void zmk_temp_layer_set_motion_threshold(uint16_t threshold) {
+    const struct device *dev = DEVICE_DT_INST_GET(0);
+    if (!dev) {
+        return;
+    }
+
+    struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
+
+    int ret = k_mutex_lock(&data->lock, K_FOREVER);
+    if (ret < 0) {
+        return;
+    }
+
+    if (!data->runtime.has_runtime_config) {
+        const struct temp_layer_config *cfg = dev->config;
+        data->runtime.has_runtime_config = true;
+        data->runtime.require_prior_idle_ms = cfg->require_prior_idle_ms;
+        data->runtime.num_positions = cfg->num_positions;
+        for (size_t i = 0; i < cfg->num_positions && i < TEMP_LAYER_MAX_EXCLUDED_POSITIONS; i++) {
+            data->runtime.excluded_positions[i] = cfg->excluded_positions[i];
+        }
+    }
+
+    data->runtime.require_prior_motion = threshold;
+    LOG_INF("Motion threshold set to %u", threshold);
+
+    k_mutex_unlock(&data->lock);
+}
+
 /* Public API: Get runtime AML configuration */
 int zmk_temp_layer_get_config(int16_t *require_prior_idle_ms_out,
                                uint32_t *excluded_positions_out, size_t max_positions,
