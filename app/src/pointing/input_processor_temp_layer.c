@@ -456,10 +456,17 @@ uint16_t zmk_temp_layer_get_motion_threshold(void) {
     struct temp_layer_data *data = (struct temp_layer_data *)dev->data;
     const struct temp_layer_config *cfg = dev->config;
 
-    if (data->runtime.has_runtime_config) {
-        return data->runtime.require_prior_motion;
+    int ret = k_mutex_lock(&data->lock, K_FOREVER);
+    if (ret < 0) {
+        return cfg->require_prior_motion;
     }
-    return cfg->require_prior_motion;
+
+    uint16_t threshold = data->runtime.has_runtime_config
+        ? data->runtime.require_prior_motion
+        : cfg->require_prior_motion;
+
+    k_mutex_unlock(&data->lock);
+    return threshold;
 }
 
 /* Public API: Set runtime motion threshold */
