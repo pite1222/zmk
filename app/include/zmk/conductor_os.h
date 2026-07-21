@@ -27,6 +27,11 @@
 
 bool conductor_profile_layers_enabled(void);
 
+/* The overlay layer ID currently applied for the selected endpoint (0 = none).
+ * Used by the keymap resolver: the overlay only overrides the default layer,
+ * resolving just above it instead of at its own layer index. */
+uint8_t conductor_profile_active_overlay(void);
+
 /* Fills map_out (a caller buffer of *len_inout entries) with the per-endpoint
  * overlay-layer map, sets *len_inout to the number of entries written
  * (ZMK_ENDPOINT_COUNT), and reports the active endpoint index and the overlay

@@ -98,6 +98,8 @@ static void persist_config(void) {
 
 bool conductor_profile_layers_enabled(void) { return pl_enabled; }
 
+uint8_t conductor_profile_active_overlay(void) { return active_overlay; }
+
 void conductor_profile_get_config(bool *enabled, uint8_t *map_out, size_t *len_inout,
                                   int *active_endpoint, uint8_t *active_layer) {
     if (enabled) {
@@ -190,6 +192,8 @@ SYS_INIT(conductor_os_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 #else /* !IS_ENABLED(CONFIG_CONDUCTOR_OS_PROFILE) */
 
 bool conductor_profile_layers_enabled(void) { return false; }
+
+uint8_t conductor_profile_active_overlay(void) { return 0; }
 
 void conductor_profile_get_config(bool *enabled, uint8_t *map_out, size_t *len_inout,
                                   int *active_endpoint, uint8_t *active_layer) {

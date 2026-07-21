@@ -22,6 +22,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/layer_state_changed.h>
 #include <zmk/events/sensor_event.h>
+#if IS_ENABLED(CONFIG_CONDUCTOR_OS_PROFILE)
+#include <zmk/conductor_os.h>
+#endif
 
 static zmk_keymap_layers_state_t _zmk_keymap_layer_locks = 0;
 static zmk_keymap_layers_state_t _zmk_keymap_layer_state = 0;
@@ -732,6 +735,35 @@ int zmk_keymap_position_state_changed(uint8_t source, uint32_t position, bool pr
         if (layer_id == ZMK_KEYMAP_LAYER_ID_INVAL) {
             continue;
         }
+#if IS_ENABLED(CONFIG_CONDUCTOR_OS_PROFILE)
+        // The per-device overlay must only override the default layer, so it resolves
+        // just above it (below every momentary/toggle layer) instead of at its own
+        // layer index. Layer activity is always tested against the press-time snapshot
+        // so a press/release pair resolves on the same layer even if the overlay
+        // switches mid-hold.
+        {
+            const zmk_keymap_layer_id_t overlay_id = conductor_profile_active_overlay();
+            if (overlay_id != 0) {
+                if (layer_id == overlay_id) {
+                    continue;
+                }
+                if (layer_id == _zmk_keymap_layer_default &&
+                    zmk_keymap_layer_active_with_state(
+                        overlay_id, zmk_keymap_active_behavior_layer[position])) {
+                    int ret = zmk_keymap_apply_position_state(source, overlay_id, position,
+                                                              pressed, timestamp);
+                    if (ret > 0) {
+                        LOG_DBG("overlay position transparent, falling through to default layer");
+                    } else if (ret < 0) {
+                        LOG_DBG("Behavior returned error: %d", ret);
+                        return ret;
+                    } else {
+                        return ret;
+                    }
+                }
+            }
+        }
+#endif
         if (zmk_keymap_layer_active_with_state(layer_id,
                                                zmk_keymap_active_behavior_layer[position])) {
             int ret =
