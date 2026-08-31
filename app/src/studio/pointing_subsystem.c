@@ -139,7 +139,7 @@ static struct {
     .scroll_denominator = 1,
     .cpi = 0,
     .scroll_inverted = 0,
-    .aml_enabled = 1,
+    .aml_enabled = 0,
     .aml_idle_ms = 300,
     .aml_excluded_count = 0,
     .precision_numerator = 1,
@@ -166,8 +166,12 @@ static struct {
     uint8_t excluded_positions[AML_SETTINGS_MAX_EXCLUDED];
     uint16_t motion_threshold;
     uint32_t deactivate_timeout_ms;
+/* Ships with AML OFF: since the mouse buttons moved onto the base layer, the
+ * auto mouse layer is transparent and only costs an extra layer switch per
+ * ball movement. Owners who want it back use the A+M+L combo or Studio; the
+ * choice persists here. */
 } aml_persist = {
-    .enabled = 1,
+    .enabled = 0,
     .idle_ms = 300,
     .excluded_count = 0,
     .motion_threshold = 0,
@@ -728,7 +732,7 @@ static int pointing_settings_reset(void) {
     pointing_settings.scroll_denominator = 1;
     pointing_settings.cpi = 0;
     pointing_settings.scroll_inverted = 0;
-    pointing_settings.aml_enabled = 1;
+    pointing_settings.aml_enabled = 0;
     /* Match the shipping default (see the pointing_settings initializer). */
     pointing_settings.accel_enabled = 1;
     pointing_settings.accel_max_milli = 1300;
@@ -740,13 +744,13 @@ static int pointing_settings_reset(void) {
     /* Apply defaults */
     apply_sensitivity();
     apply_accel();
-    zmk_temp_layer_set_aml_enabled(true);
+    zmk_temp_layer_set_aml_enabled(false);
     /* Clear the live AML deactivation-timeout override too (0 = DTS default),
      * so reset takes effect immediately instead of only after reboot. */
     zmk_temp_layer_set_deactivate_timeout(0);
 
     /* Reset AML persist to defaults */
-    aml_persist.enabled = 1;
+    aml_persist.enabled = 0;
     aml_persist.idle_ms = 300;
     aml_persist.excluded_count = 0;
     aml_persist.motion_threshold = 0;

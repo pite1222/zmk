@@ -62,9 +62,11 @@ static struct k_work_delayable layer_disable_works[MAX_LAYERS];
 /*
  * Global AML enabled flag.
  * When false, the temp_layer input processor will not activate the layer.
- * This is toggled via the pointing subsystem RPC (Studio).
+ * This is toggled via the pointing subsystem RPC (Studio) or the A+M+L combo.
+ * Ships OFF: the shipping keymap puts the mouse buttons on the base layer, so
+ * the auto layer has nothing left to add (see aml_persist below).
  */
-volatile bool zmk_temp_layer_aml_enabled = true;
+volatile bool zmk_temp_layer_aml_enabled = false;
 
 bool zmk_temp_layer_get_aml_enabled(void) {
     return zmk_temp_layer_aml_enabled;
