@@ -69,6 +69,11 @@ static zmk_keymap_layer_id_t _zmk_keymap_layer_default = 0;
 // here so that even if that layer is deactivated before the "up", event, we
 // still send the release event to the behavior in that layer also.
 static uint32_t zmk_keymap_active_behavior_layer[ZMK_KEYMAP_LEN];
+#if IS_ENABLED(CONFIG_CONDUCTOR_OS_PROFILE)
+// Overlay in effect when each position was pressed, so a release resolves the way its
+// press did even if the endpoint (and with it the overlay) changes mid-hold.
+static uint8_t zmk_keymap_active_overlay_layer[ZMK_KEYMAP_LEN];
+#endif
 
 #if IS_ENABLED(CONFIG_ZMK_KEYMAP_LAYER_REORDERING)
 
@@ -725,6 +730,9 @@ int zmk_keymap_position_state_changed(uint8_t source, uint32_t position, bool pr
                                       int64_t timestamp) {
     if (pressed) {
         zmk_keymap_active_behavior_layer[position] = _zmk_keymap_layer_state;
+#if IS_ENABLED(CONFIG_CONDUCTOR_OS_PROFILE)
+        zmk_keymap_active_overlay_layer[position] = conductor_profile_active_overlay();
+#endif
     }
 
     // We use int here to be sure we don't loop layer_idx back to UINT8_MAX
@@ -738,11 +746,11 @@ int zmk_keymap_position_state_changed(uint8_t source, uint32_t position, bool pr
 #if IS_ENABLED(CONFIG_CONDUCTOR_OS_PROFILE)
         // The per-device overlay must only override the default layer, so it resolves
         // just above it (below every momentary/toggle layer) instead of at its own
-        // layer index. Layer activity is always tested against the press-time snapshot
-        // so a press/release pair resolves on the same layer even if the overlay
-        // switches mid-hold.
+        // layer index. Both the overlay id and layer activity come from the press-time
+        // snapshot, so a press/release pair resolves on the same layer even if the
+        // overlay switches mid-hold.
         {
-            const zmk_keymap_layer_id_t overlay_id = conductor_profile_active_overlay();
+            const zmk_keymap_layer_id_t overlay_id = zmk_keymap_active_overlay_layer[position];
             if (overlay_id != 0) {
                 if (layer_id == overlay_id) {
                     continue;
