@@ -751,7 +751,9 @@ int zmk_keymap_position_state_changed(uint8_t source, uint32_t position, bool pr
         // overlay switches mid-hold.
         {
             const zmk_keymap_layer_id_t overlay_id = zmk_keymap_active_overlay_layer[position];
-            if (overlay_id != 0) {
+            // A layer deleted from the order keeps its state bit, so check the order too:
+            // an overlay that is gone from the keymap must not keep remapping keys.
+            if (overlay_id != 0 && LAYER_ID_TO_INDEX(overlay_id) != ZMK_KEYMAP_LAYER_ID_INVAL) {
                 if (layer_id == overlay_id) {
                     continue;
                 }
