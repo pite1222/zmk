@@ -46,6 +46,14 @@ int zmk_ble_unpair_all(void);
 
 int zmk_ble_set_device_name(char *name);
 
+void zmk_ble_request_conn_param_rebalance(void);
+
+#if IS_ENABLED(CONFIG_ZMK_STUDIO_TRANSPORT_BLE)
+int zmk_studio_ble_profile(void);
+#else
+static inline int zmk_studio_ble_profile(void) { return -1; }
+#endif
+
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 int zmk_ble_put_peripheral_addr(const bt_addr_le_t *addr);
 #endif /* IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) */

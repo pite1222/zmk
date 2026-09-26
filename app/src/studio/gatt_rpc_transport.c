@@ -34,6 +34,33 @@ static atomic_t notify_size;
  * is currently selected for output. -1 falls back to the active profile. */
 static atomic_t rpc_resp_profile = ATOMIC_INIT(-1);
 
+/* Profile index of the host with an open Studio session (-1 if none). ble.c
+ * keeps this host at the preferred low-latency conn params even when it is not
+ * the active HID profile: every response chunk costs an indication/confirmation
+ * round trip, so a relaxed non-active link makes large responses time out. */
+static atomic_t studio_profile = ATOMIC_INIT(-1);
+
+int zmk_studio_ble_profile(void) { return (int)atomic_get(&studio_profile); }
+
+static void studio_session_begin(struct bt_conn *conn) {
+    int profile = zmk_ble_profile_index(bt_conn_get_dst(conn));
+    if (profile < 0) {
+        return;
+    }
+
+    if ((int)atomic_set(&studio_profile, profile) != profile) {
+        LOG_DBG("Studio session started on profile %d", profile);
+        zmk_ble_request_conn_param_rebalance();
+    }
+}
+
+static void studio_session_end(int profile) {
+    if (profile >= 0 && atomic_cas(&studio_profile, profile, -1)) {
+        LOG_DBG("Studio session ended on profile %d", profile);
+        zmk_ble_request_conn_param_rebalance();
+    }
+}
+
 /* Returns a ref'd connection (caller unrefs) for the host that should receive
  * RPC responses, mirroring zmk_ble_active_profile_conn() semantics. Once a host
  * has sent a request, responses are pinned to that host's profile: if it is no
@@ -53,6 +80,8 @@ static struct bt_conn *gatt_resp_conn(void) {
     return bt_conn_lookup_addr_le(BT_ID_DEFAULT, addr);
 }
 
+static uint16_t get_notify_size_for_conn(struct bt_conn *conn);
+
 static void rpc_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     ARG_UNUSED(attr);
 
@@ -60,23 +89,22 @@ static void rpc_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 
     LOG_INF("RPC Notifications %s", notif_enabled ? "enabled" : "disabled");
 
-#if CONFIG_ZMK_STUDIO_TRANSPORT_BLE_PREF_LATENCY < CONFIG_BT_PERIPHERAL_PREF_LATENCY
-    struct bt_conn *conn = zmk_ble_active_profile_conn();
-    if (conn) {
-        uint8_t latency = notif_enabled ? CONFIG_ZMK_STUDIO_TRANSPORT_BLE_PREF_LATENCY
-                                        : CONFIG_BT_PERIPHERAL_PREF_LATENCY;
-
-        int ret = bt_conn_le_param_update(
-            conn,
-            BT_LE_CONN_PARAM(CONFIG_BT_PERIPHERAL_PREF_MIN_INT, CONFIG_BT_PERIPHERAL_PREF_MAX_INT,
-                             latency, CONFIG_BT_PERIPHERAL_PREF_TIMEOUT));
-        if (ret < 0) {
-            LOG_WRN("Failed to request lower latency while studio is active (%d)", ret);
-        }
-
-        bt_conn_unref(conn);
+    if (!notif_enabled) {
+        studio_session_end(zmk_studio_ble_profile());
     }
-#endif
+}
+
+static ssize_t rpc_ccc_cfg_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                 uint16_t value) {
+    ARG_UNUSED(attr);
+
+    if (value == BT_GATT_CCC_INDICATE) {
+        studio_session_begin(conn);
+    } else {
+        studio_session_end(zmk_ble_profile_index(bt_conn_get_dst(conn)));
+    }
+
+    return sizeof(value);
 }
 
 static ssize_t read_rpc_resp(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
@@ -96,6 +124,8 @@ static ssize_t write_rpc_req(struct bt_conn *conn, const struct bt_gatt_attr *at
     if (profile >= 0) {
         atomic_set(&rpc_resp_profile, profile);
     }
+    studio_session_begin(conn);
+    atomic_set(&notify_size, get_notify_size_for_conn(conn));
 
     uint32_t copied = 0;
     struct ring_buf *rpc_buf = zmk_rpc_get_rx_buf();
@@ -123,7 +153,9 @@ BT_GATT_SERVICE_DEFINE(
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_READ | BT_GATT_CHRC_INDICATE,
                            BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT, read_rpc_resp,
                            write_rpc_req, NULL),
-    BT_GATT_CCC(rpc_ccc_cfg_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT));
+    BT_GATT_CCC_MANAGED(((struct _bt_gatt_ccc[]){BT_GATT_CCC_INITIALIZER(
+                            rpc_ccc_cfg_changed, rpc_ccc_cfg_write, NULL)}),
+                        BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT));
 
 static uint16_t get_notify_size_for_conn(struct bt_conn *conn) {
     uint16_t notify_size = 23; // Default MTU size unless negotiated higher
@@ -136,7 +168,7 @@ static uint16_t get_notify_size_for_conn(struct bt_conn *conn) {
 }
 
 static void refresh_notify_size(void) {
-    struct bt_conn *conn = zmk_ble_active_profile_conn();
+    struct bt_conn *conn = gatt_resp_conn();
 
     uint16_t ns = get_notify_size_for_conn(conn);
     if (conn) {
@@ -158,6 +190,15 @@ static int gatt_stop_rx(void) {
 }
 
 static uint8_t indicate_buffer[27];
+/* Bytes staged in indicate_buffer that still have to be indicated. They are
+ * already consumed from the TX ring buffer, so a failed indicate retries them. */
+static uint16_t indicate_len;
+static int64_t indicate_fail_since;
+
+/* bt_gatt_indicate() fails transiently (e.g. -ENOMEM when the ATT TX pool is
+ * shared with busy HID reports); retry the staged chunk instead of stalling. */
+#define INDICATE_RETRY_DELAY K_MSEC(10)
+#define INDICATE_RETRY_TIMEOUT_MS 2000
 
 static void indicate_cb(struct bt_conn *conn, struct bt_gatt_indicate_params *params, uint8_t err);
 
@@ -167,56 +208,86 @@ static struct bt_gatt_indicate_params rpc_indicate_params = {
     .func = indicate_cb,
 };
 
+static void drop_tx_data(struct ring_buf *tx_buf) {
+    indicate_len = 0;
+    indicate_fail_since = 0;
+    // Consumer-side discard: ring_buf_reset() would race the RPC thread producer.
+    ring_buf_get(tx_buf, NULL, ring_buf_size_get(tx_buf));
+}
+
+static void notif_rpc_tx_cb(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(notify_tx_work, notif_rpc_tx_cb);
+
 static void notif_rpc_tx_cb(struct k_work *work) {
     struct bt_conn *conn = gatt_resp_conn();
     struct ring_buf *tx_buf = zmk_rpc_get_tx_buf();
 
     if (!conn) {
         LOG_WRN("No active connection for queued data, dropping");
-        ring_buf_reset(tx_buf);
+        drop_tx_data(tx_buf);
         return;
     }
 
-    uint16_t notify_size = MIN(get_notify_size_for_conn(conn), sizeof(indicate_buffer));
+    if (k_sem_take(&indicate_sem, K_NO_WAIT) < 0) {
+        // An indication is in flight; indicate_cb reschedules on completion.
+        bt_conn_unref(conn);
+        return;
+    }
 
-    if (ring_buf_size_get(tx_buf) > 0) {
-        int ret = k_sem_take(&indicate_sem, K_NO_WAIT);
-        if (ret < 0) {
-            return;
+    if (indicate_len == 0) {
+        uint16_t notify_size = MIN(get_notify_size_for_conn(conn), sizeof(indicate_buffer));
+
+        while (indicate_len < notify_size && ring_buf_size_get(tx_buf) > 0) {
+            indicate_len +=
+                ring_buf_get(tx_buf, indicate_buffer + indicate_len, notify_size - indicate_len);
+        }
+    }
+
+    if (indicate_len == 0) {
+        k_sem_give(&indicate_sem);
+        bt_conn_unref(conn);
+        return;
+    }
+
+    rpc_indicate_params.len = indicate_len;
+
+    int err = bt_gatt_indicate(conn, &rpc_indicate_params);
+    if (err == 0) {
+        indicate_len = 0;
+        indicate_fail_since = 0;
+    } else {
+        k_sem_give(&indicate_sem);
+
+        int64_t now = k_uptime_get();
+        if (indicate_fail_since == 0) {
+            indicate_fail_since = now;
         }
 
-        uint16_t added = 0;
-        while (added < notify_size && ring_buf_size_get(tx_buf) > 0) {
-            uint8_t *buf;
-            int len = ring_buf_get_claim(tx_buf, &buf, notify_size - added);
-
-            memcpy(indicate_buffer + added, buf, len);
-
-            added += len;
-            ring_buf_get_finish(tx_buf, len);
-        }
-
-        rpc_indicate_params.len = added;
-
-        int err = bt_gatt_indicate(conn, &rpc_indicate_params);
-        if (err < 0) {
-            LOG_WRN("Failed to notify the response %d", err);
-            k_sem_give(&indicate_sem);
+        if (err != -ENOTCONN && now - indicate_fail_since < INDICATE_RETRY_TIMEOUT_MS) {
+            LOG_DBG("Failed to indicate the response (%d), retrying", err);
+            k_work_schedule(&notify_tx_work, INDICATE_RETRY_DELAY);
+        } else {
+            LOG_WRN("Failed to indicate the response (%d), dropping", err);
+            drop_tx_data(tx_buf);
         }
     }
 
     bt_conn_unref(conn);
 }
 
-static K_WORK_DEFINE(notify_tx_work, notif_rpc_tx_cb);
-
 struct gatt_write_state {
     size_t pending_notify;
 };
 
 static void indicate_cb(struct bt_conn *conn, struct bt_gatt_indicate_params *params, uint8_t err) {
+    if (err) {
+        // The link is going away or ATT timed out; the next attempt drops the
+        // queued data once the connection is gone or indicate keeps failing.
+        LOG_WRN("RPC indication not confirmed (%u)", err);
+    }
+
     k_sem_give(&indicate_sem);
-    k_work_submit(&notify_tx_work);
+    k_work_schedule(&notify_tx_work, K_NO_WAIT);
 }
 
 static void gatt_tx_notify(struct ring_buf *tx_buf, size_t added, bool msg_done, void *user_data) {
@@ -226,8 +297,10 @@ static void gatt_tx_notify(struct ring_buf *tx_buf, size_t added, bool msg_done,
 
     atomic_t ns = atomic_get(&notify_size);
 
-    if (msg_done || state->pending_notify > ns) {
-        k_work_submit(&notify_tx_work);
+    // Also kick when the ring buffer is full: the RPC thread waits for space
+    // without adding data, so the byte-count threshold alone could stall.
+    if (msg_done || state->pending_notify > ns || ring_buf_space_get(tx_buf) == 0) {
+        k_work_schedule(&notify_tx_work, K_NO_WAIT);
         state->pending_notify = 0;
     }
 }
@@ -261,3 +334,11 @@ static int gatt_rpc_listener(const zmk_event_t *eh) {
 
 ZMK_LISTENER(gatt_rpc_listener, gatt_rpc_listener);
 ZMK_SUBSCRIPTION(gatt_rpc_listener, zmk_ble_active_profile_changed);
+
+static void gatt_rpc_disconnected(struct bt_conn *conn, uint8_t reason) {
+    studio_session_end(zmk_ble_profile_index(bt_conn_get_dst(conn)));
+}
+
+BT_CONN_CB_DEFINE(gatt_rpc_conn_callbacks) = {
+    .disconnected = gatt_rpc_disconnected,
+};

@@ -448,23 +448,63 @@ static void request_profile_conn_params(uint8_t index, const struct bt_le_conn_p
     bt_conn_unref(conn);
 }
 
+#if IS_ENABLED(CONFIG_ZMK_STUDIO_TRANSPORT_BLE)
+#define STUDIO_PREF_LATENCY                                                                        \
+    MIN(CONFIG_ZMK_STUDIO_TRANSPORT_BLE_PREF_LATENCY, CONFIG_BT_PERIPHERAL_PREF_LATENCY)
+#else
+#define STUDIO_PREF_LATENCY CONFIG_BT_PERIPHERAL_PREF_LATENCY
+#endif
+
+// Only touched from ble_mgmt_work_q.
+static int last_studio_profile = -1;
+
 static void rebalance_conn_params(void) {
-    if (!IS_ENABLED(CONFIG_ZMK_BLE_UPDATE_CONN_PARAMS_ON_PROFILE_SELECT)) {
+    int studio_profile = zmk_studio_ble_profile();
+    bool policy = IS_ENABLED(CONFIG_ZMK_BLE_UPDATE_CONN_PARAMS_ON_PROFILE_SELECT);
+
+    // Session ended: drop the Studio latency unless the policy below re-applies
+    // params for that profile anyway.
+    if (last_studio_profile >= 0 && last_studio_profile != studio_profile &&
+        !(policy && (last_studio_profile == active_profile ||
+                     IS_ENABLED(CONFIG_ZMK_BLE_REBALANCE_NON_ACTIVE_CONN_PARAMS)))) {
+        request_profile_conn_params(last_studio_profile,
+                                    BT_LE_CONN_PARAM(CONFIG_BT_PERIPHERAL_PREF_MIN_INT,
+                                                     CONFIG_BT_PERIPHERAL_PREF_MAX_INT,
+                                                     CONFIG_BT_PERIPHERAL_PREF_LATENCY,
+                                                     CONFIG_BT_PERIPHERAL_PREF_TIMEOUT));
+    }
+    last_studio_profile = studio_profile;
+
+    // The Studio host gets the preferred params (with the Studio latency) even
+    // when it is not the active profile: each RPC response chunk is an
+    // indication round trip, and at the relaxed non-active interval large
+    // responses (keymap) time out.
+    if (studio_profile >= 0) {
+        request_profile_conn_params(studio_profile,
+                                    BT_LE_CONN_PARAM(CONFIG_BT_PERIPHERAL_PREF_MIN_INT,
+                                                     CONFIG_BT_PERIPHERAL_PREF_MAX_INT,
+                                                     STUDIO_PREF_LATENCY,
+                                                     CONFIG_BT_PERIPHERAL_PREF_TIMEOUT));
+    }
+
+    if (!policy) {
         return;
     }
 
     // Active profile: tighten to the low-latency preferred params for smooth HID.
-    request_profile_conn_params(active_profile,
-                                BT_LE_CONN_PARAM(CONFIG_BT_PERIPHERAL_PREF_MIN_INT,
-                                                 CONFIG_BT_PERIPHERAL_PREF_MAX_INT,
-                                                 CONFIG_BT_PERIPHERAL_PREF_LATENCY,
-                                                 CONFIG_BT_PERIPHERAL_PREF_TIMEOUT));
+    if (active_profile != studio_profile) {
+        request_profile_conn_params(active_profile,
+                                    BT_LE_CONN_PARAM(CONFIG_BT_PERIPHERAL_PREF_MIN_INT,
+                                                     CONFIG_BT_PERIPHERAL_PREF_MAX_INT,
+                                                     CONFIG_BT_PERIPHERAL_PREF_LATENCY,
+                                                     CONFIG_BT_PERIPHERAL_PREF_TIMEOUT));
+    }
 
 #if IS_ENABLED(CONFIG_ZMK_BLE_REBALANCE_NON_ACTIVE_CONN_PARAMS)
     // Non-active connected profiles: relax so they consume fewer radio events,
     // freeing connection-event time for the active link's HID stream.
     for (uint8_t i = 0; i < ZMK_BLE_PROFILE_COUNT; i++) {
-        if (i == active_profile) {
+        if (i == active_profile || i == studio_profile) {
             continue;
         }
         request_profile_conn_params(i,
@@ -478,6 +518,12 @@ static void rebalance_conn_params(void) {
 
 static void rebalance_conn_params_work_cb(struct k_work *work) { rebalance_conn_params(); }
 static K_WORK_DELAYABLE_DEFINE(rebalance_conn_params_work, rebalance_conn_params_work_cb);
+// Separate item so an immediate request does not cancel a pending settle delay.
+static K_WORK_DEFINE(rebalance_conn_params_now_work, rebalance_conn_params_work_cb);
+
+void zmk_ble_request_conn_param_rebalance(void) {
+    k_work_submit_to_queue(&ble_mgmt_work_q, &rebalance_conn_params_now_work);
+}
 
 // The host's GAP auto conn param update lands ~5s after connect and would
 // override anything requested earlier, so wait for it to settle first.

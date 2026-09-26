@@ -156,7 +156,10 @@ static bool rpc_tx_buffer_write(pb_ostream_t *stream, const uint8_t *buf, size_t
         uint32_t claim_len = ring_buf_put_claim(&rpc_tx_buf, &write_buf, count - written);
 
         if (claim_len == 0) {
-            k_yield();
+            // Buffer full: kick the transport so it drains, then wait for room
+            // (k_yield() would spin at the lowest priority and starve idle).
+            ctx->transport->tx_notify(&rpc_tx_buf, 0, false, ctx->user_data);
+            k_sleep(K_MSEC(1));
             continue;
         }
 
@@ -197,6 +200,15 @@ static bool rpc_tx_buffer_write(pb_ostream_t *stream, const uint8_t *buf, size_t
     return true;
 }
 
+static void rpc_tx_put_framing_byte(struct rpc_tx_ctx *ctx, uint8_t b, bool msg_done) {
+    while (ring_buf_put(&rpc_tx_buf, &b, 1) == 0) {
+        ctx->transport->tx_notify(&rpc_tx_buf, 0, false, ctx->user_data);
+        k_sleep(K_MSEC(1));
+    }
+
+    ctx->transport->tx_notify(&rpc_tx_buf, 1, msg_done, ctx->user_data);
+}
+
 static pb_ostream_t pb_ostream_for_tx_buf(struct rpc_tx_ctx *ctx) {
     pb_ostream_t stream = {&rpc_tx_buffer_write, (void *)ctx, SIZE_MAX, 0};
     return stream;
@@ -218,10 +230,7 @@ static int send_response(const zmk_studio_Response *resp, enum zmk_transport tar
 
     pb_ostream_t stream = pb_ostream_for_tx_buf(&ctx);
 
-    uint8_t framing_byte = FRAMING_SOF;
-    ring_buf_put(&rpc_tx_buf, &framing_byte, 1);
-
-    tx->tx_notify(&rpc_tx_buf, 1, false, ctx.user_data);
+    rpc_tx_put_framing_byte(&ctx, FRAMING_SOF, false);
 
     /* Now we are ready to encode the message! */
     bool status = pb_encode(&stream, &zmk_studio_Response_msg, resp);
@@ -234,10 +243,7 @@ static int send_response(const zmk_studio_Response *resp, enum zmk_transport tar
         goto exit;
     }
 
-    framing_byte = FRAMING_EOF;
-    ring_buf_put(&rpc_tx_buf, &framing_byte, 1);
-
-    tx->tx_notify(&rpc_tx_buf, 1, true, ctx.user_data);
+    rpc_tx_put_framing_byte(&ctx, FRAMING_EOF, true);
 
 exit:
     k_mutex_unlock(&rpc_transport_mutex);
