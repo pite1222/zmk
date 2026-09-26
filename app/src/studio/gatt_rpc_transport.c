@@ -40,7 +40,31 @@ static atomic_t rpc_resp_profile = ATOMIC_INIT(-1);
  * round trip, so a relaxed non-active link makes large responses time out. */
 static atomic_t studio_profile = ATOMIC_INIT(-1);
 
+// Serializes session renewal against idle expiry.
+static struct k_spinlock studio_lock;
+static uint32_t studio_last_activity_ms;
+
 int zmk_studio_ble_profile(void) { return (int)atomic_get(&studio_profile); }
+
+#define STUDIO_SESSION_IDLE_MS (CONFIG_ZMK_STUDIO_BLE_SESSION_IDLE_SEC * MSEC_PER_SEC)
+
+static void studio_idle_work_cb(struct k_work *work) {
+    int profile = -1;
+
+    k_spinlock_key_t key = k_spin_lock(&studio_lock);
+    // A write renewing the session after this was queued wins.
+    if ((uint32_t)(k_uptime_get_32() - studio_last_activity_ms) >= STUDIO_SESSION_IDLE_MS) {
+        profile = (int)atomic_set(&studio_profile, -1);
+    }
+    k_spin_unlock(&studio_lock, key);
+
+    if (profile >= 0) {
+        LOG_DBG("Studio session on profile %d idle, ending", profile);
+        zmk_ble_request_conn_param_rebalance();
+    }
+}
+
+static K_WORK_DELAYABLE_DEFINE(studio_idle_work, studio_idle_work_cb);
 
 static void studio_session_begin(struct bt_conn *conn) {
     int profile = zmk_ble_profile_index(bt_conn_get_dst(conn));
@@ -48,14 +72,31 @@ static void studio_session_begin(struct bt_conn *conn) {
         return;
     }
 
-    if ((int)atomic_set(&studio_profile, profile) != profile) {
+    k_spinlock_key_t key = k_spin_lock(&studio_lock);
+    studio_last_activity_ms = k_uptime_get_32();
+    bool started = (int)atomic_set(&studio_profile, profile) != profile;
+    k_work_reschedule(&studio_idle_work, K_MSEC(STUDIO_SESSION_IDLE_MS));
+    k_spin_unlock(&studio_lock, key);
+
+    if (started) {
         LOG_DBG("Studio session started on profile %d", profile);
         zmk_ble_request_conn_param_rebalance();
     }
 }
 
 static void studio_session_end(int profile) {
-    if (profile >= 0 && atomic_cas(&studio_profile, profile, -1)) {
+    if (profile < 0) {
+        return;
+    }
+
+    k_spinlock_key_t key = k_spin_lock(&studio_lock);
+    bool ended = atomic_cas(&studio_profile, profile, -1);
+    if (ended) {
+        k_work_cancel_delayable(&studio_idle_work);
+    }
+    k_spin_unlock(&studio_lock, key);
+
+    if (ended) {
         LOG_DBG("Studio session ended on profile %d", profile);
         zmk_ble_request_conn_param_rebalance();
     }

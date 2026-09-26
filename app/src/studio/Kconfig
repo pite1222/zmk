@@ -93,6 +93,15 @@ config ZMK_STUDIO_TRANSPORT_BLE_PREF_LATENCY
       When the studio UI is connected, a lower latency can be requested in order
       to make the interactions between keyboard and studio faster.
 
+config ZMK_STUDIO_BLE_SESSION_IDLE_SEC
+    int "BLE Studio session idle timeout (seconds)"
+    default 20
+    help
+      A BLE Studio session keeps its host at low-latency connection parameters
+      even when it is not the active profile. The session ends after this many
+      seconds without an RPC write, so a client that stays subscribed does not
+      pin a non-active host at low latency; the next RPC write resumes it.
+
 endif
 
 endmenu
