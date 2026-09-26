@@ -157,14 +157,15 @@ BT_GATT_SERVICE_DEFINE(
                             rpc_ccc_cfg_changed, rpc_ccc_cfg_write, NULL)}),
                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT));
 
-static uint16_t get_notify_size_for_conn(struct bt_conn *conn) {
-    uint16_t notify_size = 23; // Default MTU size unless negotiated higher
-    struct bt_conn_info conn_info;
-    if (conn && bt_conn_get_info(conn, &conn_info) >= 0) {
-        notify_size = conn_info.le.data_len->tx_max_len;
-    }
+/* Largest indication payload at an ATT MTU of 247 (the usual LE maximum). */
+static uint8_t indicate_buffer[244];
 
-    return notify_size;
+// Indication payload is bounded by the negotiated ATT MTU minus the opcode and
+// handle; tx_max_len is the LL data length, not the ATT MTU.
+static uint16_t get_notify_size_for_conn(struct bt_conn *conn) {
+    uint16_t mtu = conn ? bt_gatt_get_mtu(conn) : 0;
+
+    return MIN(MAX(mtu, 23) - 3, sizeof(indicate_buffer));
 }
 
 static void refresh_notify_size(void) {
@@ -189,7 +190,6 @@ static int gatt_stop_rx(void) {
     return 0;
 }
 
-static uint8_t indicate_buffer[27];
 /* Bytes staged in indicate_buffer that still have to be indicated. They are
  * already consumed from the TX ring buffer, so a failed indicate retries them. */
 static uint16_t indicate_len;
@@ -235,7 +235,7 @@ static void notif_rpc_tx_cb(struct k_work *work) {
     }
 
     if (indicate_len == 0) {
-        uint16_t notify_size = MIN(get_notify_size_for_conn(conn), sizeof(indicate_buffer));
+        uint16_t notify_size = get_notify_size_for_conn(conn);
 
         while (indicate_len < notify_size && ring_buf_size_get(tx_buf) > 0) {
             indicate_len +=
