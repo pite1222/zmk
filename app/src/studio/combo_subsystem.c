@@ -192,11 +192,8 @@ static int combo_settings_save(void) {
     return rc != 0 ? rc : rc_suppressed;
 }
 
-/* Order-insensitive comparison of two key-position sets. */
-static bool combo_positions_equal(const int32_t *a, int a_len, const int32_t *b, int b_len) {
-    if (a_len != b_len) {
-        return false;
-    }
+/* True when every position in a also appears in b. */
+static bool combo_positions_subset(const int32_t *a, int a_len, const int32_t *b, int b_len) {
     for (int i = 0; i < a_len; i++) {
         bool found = false;
         for (int j = 0; j < b_len; j++) {
@@ -210,6 +207,14 @@ static bool combo_positions_equal(const int32_t *a, int a_len, const int32_t *b,
         }
     }
     return true;
+}
+
+/* Order-insensitive set comparison of two key-position lists. Checks both
+ * directions so a list with duplicates (e.g. [17,17]) never matches a set with
+ * distinct members ([17,18]). */
+static bool combo_positions_equal(const int32_t *a, int a_len, const int32_t *b, int b_len) {
+    return a_len == b_len && combo_positions_subset(a, a_len, b, b_len) &&
+           combo_positions_subset(b, b_len, a, a_len);
 }
 
 static bool combo_default_is_suppressed(const int32_t *positions, int len) {
@@ -379,6 +384,11 @@ static int apply_stored_combos(void) {
 
     LOG_INF("Applied %d stored combos", applied_count);
     zmk_combo_add_missing_dt_defaults_filtered(combo_default_is_suppressed);
+    /* Reconcile tombstones with the rebuilt runtime list, after the filtered
+     * add-missing step has used them: drop entries on occupied keys (e.g. left
+     * stale by a power loss between the combos and suppressed writes) and
+     * orphans. In memory only; the next save persists the pruned list. */
+    prune_suppressed_defaults();
     if (healed_count > 0) {
         int rc = combo_settings_save();
         if (rc != 0) {
