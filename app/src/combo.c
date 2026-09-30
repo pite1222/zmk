@@ -790,7 +790,24 @@ const char *zmk_combo_dt_default_behavior_at_positions(const struct zmk_combo_cf
     return NULL;
 }
 
-int zmk_combo_add_missing_dt_defaults(void) {
+int zmk_combo_dt_default_count(void) {
+    return (int)DT_COMBO_COUNT;
+}
+
+int zmk_combo_dt_default_positions(int idx, int32_t *out, int *len) {
+    if (idx < 0 || idx >= (int)DT_COMBO_COUNT) {
+        return -EINVAL;
+    }
+
+    memcpy(out, dt_combos[idx].key_positions, sizeof(int32_t) * dt_combos[idx].key_position_len);
+    *len = dt_combos[idx].key_position_len;
+    return 0;
+}
+
+/* Re-adds every DT default whose key-position set is not occupied by a runtime
+ * combo, except those for which is_suppressed (optional) returns true. */
+int zmk_combo_add_missing_dt_defaults_filtered(bool (*is_suppressed)(const int32_t *positions,
+                                                                     int len)) {
     int added = 0;
 
     for (int dt_idx = 0; dt_idx < (int)DT_COMBO_COUNT; dt_idx++) {
@@ -805,6 +822,12 @@ int zmk_combo_add_missing_dt_defaults(void) {
         }
 
         if (already_present) {
+            continue;
+        }
+
+        if (is_suppressed &&
+            is_suppressed(default_combo->key_positions, default_combo->key_position_len)) {
+            LOG_INF("Skipping suppressed DT combo %d", dt_idx);
             continue;
         }
 
@@ -838,6 +861,10 @@ int zmk_combo_add_missing_dt_defaults(void) {
     }
 
     return added;
+}
+
+int zmk_combo_add_missing_dt_defaults(void) {
+    return zmk_combo_add_missing_dt_defaults_filtered(NULL);
 }
 
 static int combo_init(void) {

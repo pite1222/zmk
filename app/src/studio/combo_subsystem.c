@@ -42,6 +42,28 @@ struct combo_storage_entry {
 static struct combo_storage_entry stored_combos[MAX_STORED_COMBOS];
 static int stored_combo_count = 0;
 static bool combos_loaded_from_settings = false;
+
+/*
+ * Suppressed DT defaults ("combo/studio/suppressed"): key-position sets of
+ * devicetree default combos that were absent from the runtime list at the last
+ * Studio save. They are not re-added at boot until a combo sits on the same
+ * position set again. Identified by position set (order-insensitive), never by
+ * devicetree index, which shifts between firmware versions. Unused entries have
+ * key_position_len == 0. The array size is fixed so the stored blob layout does
+ * not change when the devicetree gains or loses defaults.
+ */
+struct combo_suppressed_entry {
+    int32_t key_positions[ZMK_COMBO_MAX_KEYS];
+    int16_t key_position_len;
+};
+
+#define MAX_SUPPRESSED_DEFAULTS 16
+
+BUILD_ASSERT(ZMK_COMBOS_DT_COUNT <= MAX_SUPPRESSED_DEFAULTS,
+             "More DT default combos than suppressed-default storage entries");
+
+static struct combo_suppressed_entry suppressed_defaults[MAX_SUPPRESSED_DEFAULTS];
+static int suppressed_default_count = 0;
 /* One-time decode-bug heal marker (see apply_stored_combos). Loaded from
  * settings; once set, stored &none combos on DT-default positions are
  * treated as intentional user overrides again. */
@@ -70,8 +92,9 @@ SETTINGS_STATIC_HANDLER_DEFINE(zmk_combo_studio, "combo/studio",
 
 /* Called after settings_load() completes — all subsystems are initialized */
 static int combo_settings_commit(void) {
-    if (combos_loaded_from_settings) {
-        LOG_INF("Settings commit: applying %d stored combos", stored_combo_count);
+    if (combos_loaded_from_settings || suppressed_default_count > 0) {
+        LOG_INF("Settings commit: applying %d stored combos, %d suppressed defaults",
+                stored_combo_count, suppressed_default_count);
         apply_stored_combos();
     }
     /* Mark the one-time decode-bug heal as done so later intentional &none
@@ -133,12 +156,110 @@ static int combo_settings_set(const char *name, size_t len,
         }
         return 0;
     }
+    if (strcmp(name, "suppressed") == 0) {
+        if (len != sizeof(suppressed_defaults)) {
+            LOG_WRN("Suppressed combo settings size mismatch: expected %d, got %d — ignoring",
+                    (int)sizeof(suppressed_defaults), (int)len);
+            return 0;
+        }
+        int rc = read_cb(cb_arg, &suppressed_defaults, sizeof(suppressed_defaults));
+        if (rc < 0) {
+            memset(suppressed_defaults, 0, sizeof(suppressed_defaults));
+            suppressed_default_count = 0;
+            return rc;
+        }
+        suppressed_default_count = 0;
+        for (int i = 0; i < MAX_SUPPRESSED_DEFAULTS; i++) {
+            int16_t len_i = suppressed_defaults[i].key_position_len;
+            if (len_i >= 2 && len_i <= ZMK_COMBO_MAX_KEYS) {
+                suppressed_default_count++;
+            } else {
+                suppressed_defaults[i].key_position_len = 0;
+            }
+        }
+        LOG_INF("Loaded %d suppressed default combos from settings", suppressed_default_count);
+        return 0;
+    }
     return -ENOENT;
 }
 
+/* Saves the combo blob and the suppressed-defaults list together. */
 static int combo_settings_save(void) {
-    return settings_save_one("combo/studio/combos",
-                              &stored_combos, sizeof(stored_combos));
+    int rc = settings_save_one("combo/studio/combos",
+                               &stored_combos, sizeof(stored_combos));
+    int rc_suppressed = settings_save_one("combo/studio/suppressed",
+                                          &suppressed_defaults, sizeof(suppressed_defaults));
+    return rc != 0 ? rc : rc_suppressed;
+}
+
+/* Order-insensitive comparison of two key-position sets. */
+static bool combo_positions_equal(const int32_t *a, int a_len, const int32_t *b, int b_len) {
+    if (a_len != b_len) {
+        return false;
+    }
+    for (int i = 0; i < a_len; i++) {
+        bool found = false;
+        for (int j = 0; j < b_len; j++) {
+            if (a[i] == b[j]) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool combo_default_is_suppressed(const int32_t *positions, int len) {
+    for (int i = 0; i < MAX_SUPPRESSED_DEFAULTS; i++) {
+        if (suppressed_defaults[i].key_position_len != 0 &&
+            combo_positions_equal(suppressed_defaults[i].key_positions,
+                                  suppressed_defaults[i].key_position_len, positions, len)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool combo_positions_occupied(const int32_t *positions, int len) {
+    int count = zmk_combo_get_count();
+    for (int i = 0; i < count; i++) {
+        struct zmk_combo_cfg_data cfg;
+        if (zmk_combo_get_at(i, &cfg) < 0) {
+            continue;
+        }
+        if (combo_positions_equal(cfg.key_positions, cfg.key_position_len, positions, len)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Recompute the suppressed list from scratch: every DT default whose position
+ * set is not occupied by any runtime combo. */
+static void snapshot_suppressed_defaults(void) {
+    memset(suppressed_defaults, 0, sizeof(suppressed_defaults));
+    suppressed_default_count = 0;
+
+    int dt_count = zmk_combo_dt_default_count();
+    for (int d = 0; d < dt_count; d++) {
+        int32_t positions[ZMK_COMBO_MAX_KEYS];
+        int len = 0;
+        if (zmk_combo_dt_default_positions(d, positions, &len) < 0 ||
+            combo_positions_occupied(positions, len)) {
+            continue;
+        }
+        if (suppressed_default_count >= MAX_SUPPRESSED_DEFAULTS) {
+            LOG_WRN("No space to record suppressed DT combo %d", d);
+            break;
+        }
+        struct combo_suppressed_entry *entry = &suppressed_defaults[suppressed_default_count];
+        memcpy(entry->key_positions, positions, sizeof(int32_t) * len);
+        entry->key_position_len = len;
+        suppressed_default_count++;
+    }
 }
 
 /*
@@ -146,8 +267,11 @@ static int combo_settings_save(void) {
  * Replaces all current combos with the stored ones.
  */
 static int apply_stored_combos(void) {
-    /* Don't replace DT combos if no studio combos are stored */
-    if (stored_combo_count == 0) {
+    /* Don't replace DT combos if no studio combos are stored and no DT default
+     * is suppressed. With suppressed defaults but zero stored combos, fall
+     * through: all runtime combos are removed and only the non-suppressed DT
+     * defaults are re-added below. */
+    if (stored_combo_count == 0 && suppressed_default_count == 0) {
         LOG_INF("No stored combos — keeping DT defaults");
         return 0;
     }
@@ -224,7 +348,7 @@ static int apply_stored_combos(void) {
     }
 
     LOG_INF("Applied %d stored combos", applied_count);
-    zmk_combo_add_missing_dt_defaults();
+    zmk_combo_add_missing_dt_defaults_filtered(combo_default_is_suppressed);
     if (healed_count > 0) {
         int rc = combo_settings_save();
         if (rc != 0) {
@@ -275,6 +399,7 @@ static int snapshot_combos_to_storage(void) {
         stored_idx++;
     }
 
+    snapshot_suppressed_defaults();
     return 0;
 }
 
@@ -325,9 +450,11 @@ zmk_studio_Response get_combos(const zmk_studio_Request *req) {
         combo_msg->require_prior_idle_ms = cfg.require_prior_idle_ms;
         combo_msg->layer_mask = cfg.layer_mask;
         combo_msg->slow_release = cfg.slow_release;
+        combo_msg->is_default = cfg.from_dt_default || zmk_combo_cfg_is_dt_default(&cfg);
 
         resp.combos_count++;
     }
+    resp.default_suppression = true;
 
     LOG_INF("get_combos: returning %d combos (max %d)",
             resp.combos_count, CONFIG_ZMK_COMBO_MAX_DYNAMIC_COMBOS);
@@ -520,6 +647,8 @@ static int combo_settings_reset(void) {
     memset(stored_combos, 0, sizeof(stored_combos));
     stored_combo_count = 0;
     combos_loaded_from_settings = false;
+    memset(suppressed_defaults, 0, sizeof(suppressed_defaults));
+    suppressed_default_count = 0;
     return combo_settings_save();
 }
 
