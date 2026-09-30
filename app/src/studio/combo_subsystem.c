@@ -45,9 +45,9 @@ static bool combos_loaded_from_settings = false;
 
 /*
  * Suppressed DT defaults ("combo/studio/suppressed"): key-position sets of
- * devicetree default combos that were absent from the runtime list at the last
- * Studio save. They are not re-added at boot until a combo sits on the same
- * position set again. Identified by position set (order-insensitive), never by
+ * devicetree default combos removed via remove_combo with suppress_default.
+ * They are not re-added at boot; an entry is pruned once any combo occupies
+ * the same position set. Identified by position set (order-insensitive), never by
  * devicetree index, which shifts between firmware versions. Unused entries have
  * key_position_len == 0. The array size is fixed so the stored blob layout does
  * not change when the devicetree gains or loses defaults.
@@ -237,29 +237,59 @@ static bool combo_positions_occupied(const int32_t *positions, int len) {
     return false;
 }
 
-/* Recompute the suppressed list from scratch: every DT default whose position
- * set is not occupied by any runtime combo. */
-static void snapshot_suppressed_defaults(void) {
-    memset(suppressed_defaults, 0, sizeof(suppressed_defaults));
-    suppressed_default_count = 0;
-
+static bool combo_positions_match_dt_default(const int32_t *positions, int len) {
     int dt_count = zmk_combo_dt_default_count();
     for (int d = 0; d < dt_count; d++) {
-        int32_t positions[ZMK_COMBO_MAX_KEYS];
-        int len = 0;
-        if (zmk_combo_dt_default_positions(d, positions, &len) < 0 ||
-            combo_positions_occupied(positions, len)) {
+        int32_t dt_positions[ZMK_COMBO_MAX_KEYS];
+        int dt_len = 0;
+        if (zmk_combo_dt_default_positions(d, dt_positions, &dt_len) == 0 &&
+            combo_positions_equal(dt_positions, dt_len, positions, len)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Tombstone the DT default on this position set (remove_combo with
+ * suppress_default). No-op when the set is not a DT default's or already
+ * suppressed. */
+static void suppress_dt_default(const int32_t *positions, int len) {
+    if (!combo_positions_match_dt_default(positions, len) ||
+        combo_default_is_suppressed(positions, len)) {
+        return;
+    }
+    if (suppressed_default_count >= MAX_SUPPRESSED_DEFAULTS) {
+        LOG_WRN("No space to record a suppressed DT combo");
+        return;
+    }
+    struct combo_suppressed_entry *entry = &suppressed_defaults[suppressed_default_count];
+    memset(entry, 0, sizeof(*entry));
+    memcpy(entry->key_positions, positions, sizeof(int32_t) * len);
+    entry->key_position_len = len;
+    suppressed_default_count++;
+}
+
+/* Drop suppressed entries whose position set is occupied by a runtime combo
+ * (placing any combo on those keys clears the tombstone) or no longer matches
+ * any DT default (orphans after a firmware update). Keeps used entries packed
+ * from index 0 with zeroed unused entries. */
+static void prune_suppressed_defaults(void) {
+    int kept = 0;
+    for (int i = 0; i < MAX_SUPPRESSED_DEFAULTS; i++) {
+        const struct combo_suppressed_entry *entry = &suppressed_defaults[i];
+        if (entry->key_position_len == 0 ||
+            combo_positions_occupied(entry->key_positions, entry->key_position_len) ||
+            !combo_positions_match_dt_default(entry->key_positions, entry->key_position_len)) {
             continue;
         }
-        if (suppressed_default_count >= MAX_SUPPRESSED_DEFAULTS) {
-            LOG_WRN("No space to record suppressed DT combo %d", d);
-            break;
+        if (kept != i) {
+            suppressed_defaults[kept] = *entry;
         }
-        struct combo_suppressed_entry *entry = &suppressed_defaults[suppressed_default_count];
-        memcpy(entry->key_positions, positions, sizeof(int32_t) * len);
-        entry->key_position_len = len;
-        suppressed_default_count++;
+        kept++;
     }
+    memset(&suppressed_defaults[kept], 0,
+           sizeof(suppressed_defaults[0]) * (MAX_SUPPRESSED_DEFAULTS - kept));
+    suppressed_default_count = kept;
 }
 
 /*
@@ -399,7 +429,7 @@ static int snapshot_combos_to_storage(void) {
         stored_idx++;
     }
 
-    snapshot_suppressed_defaults();
+    prune_suppressed_defaults();
     return 0;
 }
 
@@ -619,6 +649,10 @@ zmk_studio_Response remove_combo(const zmk_studio_Request *req) {
             zmk_combo_RemoveComboResponse_REMOVE_COMBO_RESP_ERR_INVALID_INDEX);
     }
 
+    /* Capture the positions before removal for an explicit default tombstone */
+    struct zmk_combo_cfg_data removed;
+    bool have_removed = zmk_combo_get_at(index, &removed) == 0;
+
     int ret = zmk_combo_remove(index);
     if (ret < 0) {
         LOG_WRN("remove_combo: failed: %d", ret);
@@ -626,7 +660,14 @@ zmk_studio_Response remove_combo(const zmk_studio_Request *req) {
             zmk_combo_RemoveComboResponse_REMOVE_COMBO_RESP_ERR_GENERIC);
     }
 
-    /* Snapshot and save */
+    /* Only an explicit request suppresses a DT default. A plain remove (also
+     * used by Studio's Write flow before re-adding) leaves no tombstone, so an
+     * interrupted Write never loses a default past the next reboot. */
+    if (rm_req->suppress_default && have_removed) {
+        suppress_dt_default(removed.key_positions, removed.key_position_len);
+    }
+
+    /* Snapshot (prunes tombstones on occupied keys) and save */
     snapshot_combos_to_storage();
     ret = combo_settings_save();
     if (ret < 0) {
