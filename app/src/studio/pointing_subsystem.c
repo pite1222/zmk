@@ -64,6 +64,15 @@ ZMK_RPC_SUBSYSTEM(pointing)
 #define ACCEL_MIN_MILLI_MAX 2000 /* 2.0x — ceiling for the low-speed boost */
 #define ACCEL_SLOW_RANGE_MAX 100 /* counts/poll */
 
+/* Shipping acceleration defaults (user decision 2026-10-14): Studio preset
+ * "medium" (1.4x from 8 counts/poll over 22) plus a 1.7x low-speed boost
+ * under 13 counts/poll. */
+#define DEFAULT_ACCEL_MAX_MILLI 1400
+#define DEFAULT_ACCEL_THRESHOLD 8
+#define DEFAULT_ACCEL_RANGE 22
+#define DEFAULT_ACCEL_MIN_MILLI 1700
+#define DEFAULT_ACCEL_SLOW_RANGE 13
+
 /*
  * Try to get the trackball device from devicetree.
  * The conductor board defines it as &trackball in the overlay.
@@ -144,18 +153,18 @@ static struct {
     .aml_excluded_count = 0,
     .precision_numerator = 1,
     .precision_denominator = 4,
-    // Shipping default (v0.6.10, hardware-tuned 2026-07-06): gentle
-    // acceleration (1.3x from 14 counts/poll over 21) plus a low-speed boost
-    // (1.7x under 7 counts/poll) for a lighter feel on slow movements.
-    // Applies to freshly-flashed or settings-reset devices only — devices
-    // upgrading with a saved blob keep their accel values and get the
-    // low-speed zone OFF (see the migration seeds in pointing_settings_set).
+    // Shipping default (v1.0.4, user decision 2026-10-14): acceleration
+    // 1.4x from 8 counts/poll over 22 plus a low-speed boost (1.7x under 13
+    // counts/poll) for a lighter feel on slow movements. Applies to
+    // freshly-flashed or settings-reset devices; devices upgrading from a
+    // pre-0.6.10 blob keep their accel values and get the same low-speed
+    // zone (see the migration seeds in pointing_settings_set).
     .accel_enabled = 1,
-    .accel_max_milli = 1300,
-    .accel_threshold = 14,
-    .accel_range = 21,
-    .accel_min_milli = 1700,
-    .accel_slow_range = 7,
+    .accel_max_milli = DEFAULT_ACCEL_MAX_MILLI,
+    .accel_threshold = DEFAULT_ACCEL_THRESHOLD,
+    .accel_range = DEFAULT_ACCEL_RANGE,
+    .accel_min_milli = DEFAULT_ACCEL_MIN_MILLI,
+    .accel_slow_range = DEFAULT_ACCEL_SLOW_RANGE,
 };
 
 /* AML-specific persistent storage */
@@ -219,15 +228,15 @@ static int pointing_settings_set(const char *name, size_t len,
              * get the factory acceleration instead of the zero-fill
              * (enabled=0) reaching apply_accel() below. Blobs that do contain
              * them are simply overwritten by read_cb. The low-speed zone is
-             * deliberately seeded OFF (1000): devices upgrading from an older
-             * blob keep their familiar slow-speed feel — the boost default is
-             * for fresh/reset devices only (user decision 2026-07-06). */
+             * seeded with the shipping boost, since pre-0.6.10 blobs have no
+             * low-speed fields (user decision 2026-10-14; previously seeded
+             * OFF per the 2026-07-06 decision). */
             pointing_settings.accel_enabled = 1;
-            pointing_settings.accel_max_milli = 1300;
-            pointing_settings.accel_threshold = 14;
-            pointing_settings.accel_range = 21;
-            pointing_settings.accel_min_milli = 1000;
-            pointing_settings.accel_slow_range = 7;
+            pointing_settings.accel_max_milli = DEFAULT_ACCEL_MAX_MILLI;
+            pointing_settings.accel_threshold = DEFAULT_ACCEL_THRESHOLD;
+            pointing_settings.accel_range = DEFAULT_ACCEL_RANGE;
+            pointing_settings.accel_min_milli = DEFAULT_ACCEL_MIN_MILLI;
+            pointing_settings.accel_slow_range = DEFAULT_ACCEL_SLOW_RANGE;
             /* Read old data over the defaults */
             int rc = read_cb(cb_arg, &pointing_settings, read_len);
             if (rc >= 0) {
@@ -735,11 +744,11 @@ static int pointing_settings_reset(void) {
     pointing_settings.aml_enabled = 0;
     /* Match the shipping default (see the pointing_settings initializer). */
     pointing_settings.accel_enabled = 1;
-    pointing_settings.accel_max_milli = 1300;
-    pointing_settings.accel_threshold = 14;
-    pointing_settings.accel_range = 21;
-    pointing_settings.accel_min_milli = 1700;
-    pointing_settings.accel_slow_range = 7;
+    pointing_settings.accel_max_milli = DEFAULT_ACCEL_MAX_MILLI;
+    pointing_settings.accel_threshold = DEFAULT_ACCEL_THRESHOLD;
+    pointing_settings.accel_range = DEFAULT_ACCEL_RANGE;
+    pointing_settings.accel_min_milli = DEFAULT_ACCEL_MIN_MILLI;
+    pointing_settings.accel_slow_range = DEFAULT_ACCEL_SLOW_RANGE;
 
     /* Apply defaults */
     apply_sensitivity();
