@@ -66,12 +66,12 @@ ZMK_RPC_SUBSYSTEM(pointing)
 
 /* Shipping acceleration defaults (user decision 2026-10-14): Studio preset
  * "medium" (1.4x from 8 counts/poll over 22) plus a 1.7x low-speed boost
- * under 13 counts/poll. */
+ * under 11 counts/poll. */
 #define DEFAULT_ACCEL_MAX_MILLI 1400
 #define DEFAULT_ACCEL_THRESHOLD 8
 #define DEFAULT_ACCEL_RANGE 22
 #define DEFAULT_ACCEL_MIN_MILLI 1700
-#define DEFAULT_ACCEL_SLOW_RANGE 13
+#define DEFAULT_ACCEL_SLOW_RANGE 11
 
 /*
  * Try to get the trackball device from devicetree.
@@ -154,7 +154,7 @@ static struct {
     .precision_numerator = 1,
     .precision_denominator = 4,
     // Shipping default (v1.0.4, user decision 2026-10-14): acceleration
-    // 1.4x from 8 counts/poll over 22 plus a low-speed boost (1.7x under 13
+    // 1.4x from 8 counts/poll over 22 plus a low-speed boost (1.7x under 11
     // counts/poll) for a lighter feel on slow movements. Applies to
     // freshly-flashed or settings-reset devices; devices upgrading from a
     // pre-0.6.10 blob keep their accel values and get the same low-speed
