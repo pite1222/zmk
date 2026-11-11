@@ -8,10 +8,11 @@
  * Applies a speed-dependent gain to relative X/Y cursor motion. The gain ramps
  * linearly from 1.0x up to (max_milli/1000)x as the per-poll movement magnitude
  * crosses `threshold` (counts/poll), reaching the maximum after `range`
- * additional counts/poll. Below `slow_range` counts/poll the gain is instead
- * held flat at (min_milli/1000)x, returning linearly to 1.0x by `threshold` —
- * below 1.0 decelerates slow movements for fine pointing, above 1.0 boosts
- * them for a lighter feel (min_milli == 1000 disables the low-speed zone).
+ * additional counts/poll. Below `slow_range` counts/poll (capped at
+ * `threshold`) the gain is instead held flat at (min_milli/1000)x and then
+ * hands over continuously to the fast curve (see compute_gain_q8) — below 1.0
+ * decelerates slow movements for fine pointing, above 1.0 boosts them for a
+ * lighter feel (min_milli == 1000 disables the low-speed zone).
  * Parameters are read from globals set at runtime by the pointing_subsystem
  * RPC handler; enabled == 0 -> passthrough (linear).
  *
@@ -77,9 +78,34 @@ struct studio_accel_data {
     uint16_t gain_q8;       /* gain applied to the CURRENT frame (one-poll lag) */
 };
 
-/* Piecewise-linear gain: flat min gain up to `slow_range` (so the whole slow
- * zone is clearly felt, not just near-zero speeds), ramping back to 1.0x at
- * `threshold`, then up to max gain after `range` additional counts. */
+/* Fast-zone gain: 1.0x up to `threshold`, then linear up to max gain over
+ * `range` additional counts. */
+static int32_t fast_gain_q8(int32_t magnitude, int32_t threshold, int32_t range,
+                            int32_t max_milli) {
+    if (magnitude <= threshold) {
+        return ACCEL_GAIN_UNITY;
+    }
+    int32_t over = magnitude - threshold;
+    if (over > range) {
+        over = range;
+    }
+    int32_t max_q8 = (max_milli * ACCEL_GAIN_UNITY) / 1000;
+    return ACCEL_GAIN_UNITY + ((max_q8 - ACCEL_GAIN_UNITY) * over) / range;
+}
+
+/* Speed -> gain curve. The gain is continuous in magnitude for every setting
+ * and output (magnitude * gain) never decreases as magnitude grows, so a
+ * slightly faster flick can never move the cursor less.
+ *
+ * Low-speed zone: flat min gain up to slow_end = min(slow_range, threshold).
+ * Above it:
+ *  - boost (min > 1.0): the extra (min - 1) * slow_end counts gained at the
+ *    end of the slow zone are kept as a constant bonus (output slope 1.0x), so
+ *    the gain decays as 1 + (min - 1) * slow_end / magnitude until the fast
+ *    curve overtakes it: gain = max(fast, decaying boost).
+ *  - decel (min < 1.0): linear return from min to 1.0x by threshold (or over
+ *    the fast ramp when slow_end == threshold), multiplied with the fast gain;
+ *    both factors are non-decreasing, so output is too. */
 static uint16_t compute_gain_q8(int32_t magnitude) {
     if (studio_accel_enabled == 0) {
         return ACCEL_GAIN_UNITY;
@@ -96,54 +122,34 @@ static uint16_t compute_gain_q8(int32_t magnitude) {
         max_milli = 1000; /* never attenuate below 1.0x in the fast zone */
     }
 
-    if (magnitude <= threshold) {
-        int32_t min_milli = studio_accel_min_milli;
-        /* Cap the flat zone at threshold so the slow and fast zones never
-         * overlap even if slow_range is configured larger. */
-        int32_t slow_end = studio_accel_slow_range;
-        if (slow_end > threshold) {
-            slow_end = threshold;
-        }
-        if (min_milli == 1000 || min_milli <= 0 || slow_end <= 0) {
-            return ACCEL_GAIN_UNITY;
-        }
-        /* min < 1.0 decelerates slow movements (precision), min > 1.0 boosts
-         * them (lighter feel). Flat min across the slow zone, then a linear
-         * return to 1.0x by threshold (a hard step if slow_end == threshold). */
-        int32_t min_q8 = (min_milli * ACCEL_GAIN_UNITY) / 1000;
-        int32_t gain;
-        if (magnitude <= slow_end) {
-            gain = min_q8;
-        } else if (magnitude >= threshold) {
-            gain = ACCEL_GAIN_UNITY;
-        } else {
-            gain = min_q8 +
-                   ((ACCEL_GAIN_UNITY - min_q8) * (magnitude - slow_end)) /
-                       (threshold - slow_end);
-        }
-        int32_t lo = min_q8 < ACCEL_GAIN_UNITY ? min_q8 : ACCEL_GAIN_UNITY;
-        int32_t hi = min_q8 > ACCEL_GAIN_UNITY ? min_q8 : ACCEL_GAIN_UNITY;
-        if (gain < lo) {
-            gain = lo;
-        }
-        if (gain > hi) {
-            gain = hi;
-        }
-        return (uint16_t)gain;
+    int32_t fast = fast_gain_q8(magnitude, threshold, range, max_milli);
+
+    int32_t min_milli = studio_accel_min_milli;
+    int32_t slow_end = studio_accel_slow_range;
+    if (slow_end > threshold) {
+        slow_end = threshold;
+    }
+    if (min_milli == 1000 || min_milli <= 0 || slow_end <= 0) {
+        return (uint16_t)fast;
     }
 
-    int32_t over = magnitude - threshold;
-    if (over > range) {
-        over = range;
+    int32_t min_q8 = (min_milli * ACCEL_GAIN_UNITY) / 1000;
+    if (magnitude <= slow_end) {
+        return (uint16_t)min_q8;
     }
 
-    int32_t max_q8 = (max_milli * ACCEL_GAIN_UNITY) / 1000;
-    int32_t gain = ACCEL_GAIN_UNITY + ((max_q8 - ACCEL_GAIN_UNITY) * over) / range;
-
-    if (gain < ACCEL_GAIN_UNITY) {
-        gain = ACCEL_GAIN_UNITY;
+    if (min_q8 > ACCEL_GAIN_UNITY) {
+        int32_t boost = ACCEL_GAIN_UNITY + ((min_q8 - ACCEL_GAIN_UNITY) * slow_end) / magnitude;
+        return (uint16_t)(boost > fast ? boost : fast);
     }
-    return (uint16_t)gain;
+
+    int32_t ramp_end = slow_end < threshold ? threshold : threshold + range;
+    int32_t ramp = ACCEL_GAIN_UNITY;
+    if (magnitude < ramp_end) {
+        ramp = min_q8 + ((ACCEL_GAIN_UNITY - min_q8) * (magnitude - slow_end)) /
+                            (ramp_end - slow_end);
+    }
+    return (uint16_t)((fast * ramp) / ACCEL_GAIN_UNITY);
 }
 
 static int16_t scale_with_remainder(int16_t value, uint16_t gain_q8, int16_t *remainder) {
